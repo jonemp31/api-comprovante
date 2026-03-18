@@ -21,7 +21,7 @@ import base64
 import hashlib
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from pathlib import Path
 
@@ -58,6 +58,9 @@ EXPECTED_CPF_RECEBEDOR_PARTIAL = os.getenv("EXPECTED_CPF_RECEBEDOR_PARTIAL", "82
 EXPECTED_INSTITUICAO_RECEBEDOR = os.getenv("EXPECTED_INSTITUICAO_RECEBEDOR", "Banco Inter")
 EXPECTED_CHAVE_PIX = os.getenv("EXPECTED_CHAVE_PIX", "16991500219")
 MAX_HORAS_VALIDADE = int(os.getenv("MAX_HORAS_VALIDADE", "24"))
+
+# Fuso horário de Brasília (UTC-3)
+BRT = timezone(timedelta(hours=-3))
 
 logger.info("=== Configuração carregada ===")
 logger.info(f"  EXPECTED_NOME_RECEBEDOR = {EXPECTED_NOME_RECEBEDOR}")
@@ -1280,7 +1283,7 @@ def parse_data_hora(data_hora_str: str) -> Optional[datetime]:
                 hora = int(groups[3]) if len(groups) > 3 else 0
                 minuto = int(groups[4]) if len(groups) > 4 else 0
                 segundo = int(groups[5]) if len(groups) > 5 else 0
-                return datetime(ano, mes, dia, hora, minuto, segundo)
+                return datetime(ano, mes, dia, hora, minuto, segundo, tzinfo=BRT)
             except (ValueError, IndexError):
                 continue
 
@@ -1292,7 +1295,7 @@ def parse_data_hora(data_hora_str: str) -> Optional[datetime]:
         mes_num = meses.get(mes_str[:3])
         if mes_num:
             try:
-                return datetime(ano, int(mes_num), dia, hora, minuto, segundo)
+                return datetime(ano, int(mes_num), dia, hora, minuto, segundo, tzinfo=BRT)
             except ValueError:
                 pass
 
@@ -1304,7 +1307,7 @@ def parse_data_hora(data_hora_str: str) -> Optional[datetime]:
         mes_num = meses.get(mes_str[:3])
         if mes_num:
             try:
-                return datetime(ano, int(mes_num), dia, hora, minuto, segundo)
+                return datetime(ano, int(mes_num), dia, hora, minuto, segundo, tzinfo=BRT)
             except ValueError:
                 pass
 
@@ -1320,7 +1323,7 @@ def is_data_dentro_validade(data_hora_str: str, max_horas: int = MAX_HORAS_VALID
     if dt is None:
         return False, "Não foi possível interpretar a data/hora do comprovante"
 
-    agora = datetime.now()
+    agora = datetime.now(BRT)
     diferenca = agora - dt
     horas_diferenca = diferenca.total_seconds() / 3600
 
@@ -1520,7 +1523,7 @@ def calculate_trust_score(data: PixData) -> TrustScore:
     if data.data_hora:
         dt = parse_data_hora(data.data_hora)
         if dt:
-            horas_diferenca = (datetime.now() - dt).total_seconds() / 3600
+            horas_diferenca = (datetime.now(BRT) - dt).total_seconds() / 3600
 
     # Verifica se os dados do recebedor conferem
     recebedor_ok = True
