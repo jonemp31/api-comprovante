@@ -1,0 +1,530 @@
+[
+  {
+    "arquivo": "1000136555.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "1000136627.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "1773414721577.pdf",
+    "success": true,
+    "score": 0.7,
+    "nivel": "pixvalidomais24horas",
+    "banco": "N/A",
+    "valor": 10.0,
+    "recebedor": "MARIA EDUARDA CAVATON",
+    "pagador": "Rogerio Rodrigues Rosa",
+    "id_transacao": "E10664513202603131511OP7jzosJG10",
+    "chave_pix": "+5516991500219",
+    "data_hora": "13/03/2026 Ã s 12:12:01",
+    "penalidades": [
+      "âœ— Comprovante com mais de 24h (123.8h atrÃ¡s) (-0.30)"
+    ],
+    "error": null
+  },
+  {
+    "arquivo": "190810951769098148510298340.pdf",
+    "success": true,
+    "score": 0.0,
+    "nivel": "pixinvalido",
+    "banco": "N/A",
+    "valor": 20.0,
+    "recebedor": "NOVUS SOLUTIONS LTDA",
+    "pagador": "ANTONIO CONCEICAO DA SILVA",
+    "id_transacao": "E22896431202512251907oTfk8bONt",
+    "chave_pix": null,
+    "data_hora": "25/dez/2025 - 16:08:18",
+    "penalidades": [
+      "âœ— Nome recebedor 'NOVUS SOLUTIONS LTDA' NÃƒO confere com o esperado 'Maria Eduarda Cavaton' (-0.35)",
+      "âœ— CPF recebedor '63.759.196/0001-12' NÃƒO contÃ©m trecho esperado '824.458' (-0.15)",
+      "âœ— Comprovante com mais de 24h (1991.9h atrÃ¡s) (-0.30)",
+      "âœ— InstituiÃ§Ã£o recebedor 'E2 BANK' NÃƒO confere com 'Banco Inter' (-0.25)",
+      "âœ— Chave PIX nÃ£o encontrada (-0.02)"
+    ],
+    "error": null
+  },
+  {
+    "arquivo": "2026-03-17_005819 (1).pdf",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "2026-03-17_005819.pdf",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "4b87cc0b-6f57-4f58-b81f-cff4929b371e.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "72fb2378-d3dc-429b-8120-3c4ad0bcd651.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "Comprovante.pdf",
+    "success": true,
+    "score": 0.47,
+    "nivel": "pixsuspeito",
+    "banco": "N/A",
+    "valor": 10.0,
+    "recebedor": null,
+    "pagador": null,
+    "id_transacao": "E60746948202603121203A3045q8ioCk",
+    "chave_pix": null,
+    "data_hora": "12/03/2026",
+    "penalidades": [
+      "âœ— Nome do recebedor nÃ£o encontrado (-0.08)",
+      "âœ— Nome do pagador nÃ£o encontrado (-0.05)",
+      "âœ— CPF do recebedor nÃ£o encontrado (-0.05)",
+      "âœ— CPF do pagador nÃ£o encontrado (-0.03)",
+      "âœ— Comprovante com mais de 24h (160.0h atrÃ¡s) (-0.30)",
+      "âœ— Chave PIX nÃ£o encontrada (-0.02)"
+    ],
+    "error": null
+  },
+  {
+    "arquivo": "IMG-20260304-WA0014.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "IMG-20260315-WA0033.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "IMG-20260316-WA0124.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "IMG-20260316-WA0294.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "IMG-20260318-WA0003.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "IMG-20260318-WA0012 (1).jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "IMG-20260318-WA0012.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.13.08.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.13.15.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.13.16 (1).jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.13.16.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.16.22 (1).jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.16.22.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.16.23 (1).jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.16.23.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.24.38 (1).jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.24.38.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.24.39 (1).jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.24.39.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.24.40 (1).jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.24.40.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.24.41.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.24.42 (1).jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.24.42.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.24.43.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.43.29.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.49.00 (1).jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.49.00.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.51.12 (1).jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.51.12.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.51.37 (1).jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "WhatsApp Image 2026-03-18 at 03.51.37.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "b302c7ba-b33c-4d5f-a64e-6f91dc85950f.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "bb.pdf",
+    "success": false,
+    "error": "the JSON object must be str, bytes or bytearray, not NoneType",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "bf2959e2-3bdb-4adb-9d41-fd762a09dc28.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "c6.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "comprle.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "compropredriero.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "comprovante_nubank_18_03_2026.pdf",
+    "success": true,
+    "score": 0.0,
+    "nivel": "pixinvalido",
+    "banco": "N/A",
+    "valor": 44.98,
+    "recebedor": "MARCIO DO PRADO BISCHOFF",
+    "pagador": "Luiz Henrique de Quadros Fuhr",
+    "id_transacao": "E18236120202603090010s12cd3e2b53",
+    "chave_pix": null,
+    "data_hora": "08 MAR 2026 - 21:10:29",
+    "penalidades": [
+      "âœ— Nome recebedor 'MARCIO DO PRADO BISCHOFF' NÃƒO confere com o esperado 'Maria Eduarda Cavaton' (-0.35)",
+      "âœ— CPF recebedor '***.468.230-**' NÃƒO contÃ©m trecho esperado '824.458' (-0.15)",
+      "âœ— Comprovante com mais de 24h (234.8h atrÃ¡s) (-0.30)",
+      "âœ— InstituiÃ§Ã£o recebedor 'BCO C6 S.A.' NÃƒO confere com 'Banco Inter' (-0.25)",
+      "âœ— Chave PIX nÃ£o encontrada (-0.02)"
+    ],
+    "error": null
+  },
+  {
+    "arquivo": "comprovante_picpay_PIX_02032026194446.pdf",
+    "success": true,
+    "score": 0.7,
+    "nivel": "pixvalidomais24horas",
+    "banco": "N/A",
+    "valor": 5.0,
+    "recebedor": "MARIA EDUARDA CAVATON",
+    "pagador": "JOSIMAR ALVES DE SOUZA",
+    "id_transacao": "E22896431202603022243BM3OHD8DX",
+    "chave_pix": "+5516991500219",
+    "data_hora": "02/mar/2026 - 19:44:50",
+    "penalidades": [
+      "âœ— Comprovante com mais de 24h (380.3h atrÃ¡s) (-0.30)"
+    ],
+    "error": null
+  },
+  {
+    "arquivo": "comrpvoant.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "nextpdf3946770065228324064.pdf",
+    "success": true,
+    "score": 0.36,
+    "nivel": "pixsuspeito",
+    "banco": "N/A",
+    "valor": null,
+    "recebedor": null,
+    "pagador": null,
+    "id_transacao": "E60746948202603171542M39437VTFxg",
+    "chave_pix": "+5516991500219",
+    "data_hora": "17/03/2026",
+    "penalidades": [
+      "âœ— Valor nÃ£o encontrado ou zero (-0.10)",
+      "âœ— Nome do recebedor nÃ£o encontrado (-0.08)",
+      "âœ— Nome do pagador nÃ£o encontrado (-0.05)",
+      "âœ— CPF do recebedor nÃ£o encontrado (-0.05)",
+      "âœ— CPF do pagador nÃ£o encontrado (-0.03)",
+      "âœ— Comprovante com mais de 24h (40.0h atrÃ¡s) (-0.30)",
+      "âœ— InstituiÃ§Ã£o do recebedor nÃ£o encontrada (-0.03)"
+    ],
+    "error": null
+  },
+  {
+    "arquivo": "pagseguro.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "pixoktambem.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "printmensagem.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "real1.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "real2.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "real3.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "real4.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "real5.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "real6.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "real7.jpeg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "salvei.jpg",
+    "success": false,
+    "error": "'NoneType' object has no attribute 'get'",
+    "score": "ERR",
+    "nivel": "ERR"
+  },
+  {
+    "arquivo": "testejoel.pdf",
+    "success": true,
+    "score": 1.0,
+    "nivel": "pix24horaspobre",
+    "banco": "N/A",
+    "valor": 1.0,
+    "recebedor": "Maria Eduarda Cavaton",
+    "pagador": "Marisa Aparecida Sabino Souza",
+    "id_transacao": "E9040088820260318103557808113198",
+    "chave_pix": "+55 (**) *****-0219",
+    "data_hora": "18/03/2026",
+    "penalidades": [],
+    "error": null
+  }
+]

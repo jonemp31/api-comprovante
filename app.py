@@ -59,12 +59,6 @@ EXPECTED_INSTITUICAO_RECEBEDOR = os.getenv("EXPECTED_INSTITUICAO_RECEBEDOR", "Ba
 EXPECTED_CHAVE_PIX = os.getenv("EXPECTED_CHAVE_PIX", "16991500219")
 MAX_HORAS_VALIDADE = int(os.getenv("MAX_HORAS_VALIDADE", "24"))
 
-# Ollama / Qwen2.5-VL (validador visual)
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-vl:3b")
-OLLAMA_ENABLED = os.getenv("OLLAMA_ENABLED", "false").lower() in ("true", "1", "yes")
-OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
-OLLAMA_MIN_SCORE = float(os.getenv("OLLAMA_MIN_SCORE", "0.45"))
 
 # Fuso horário de Brasília (UTC-3)
 BRT = timezone(timedelta(hours=-3))
@@ -79,11 +73,7 @@ logger.info(f"  EXPECTED_CPF_RECEBEDOR_PARTIAL = {EXPECTED_CPF_RECEBEDOR_PARTIAL
 logger.info(f"  EXPECTED_INSTITUICAO_RECEBEDOR = {EXPECTED_INSTITUICAO_RECEBEDOR}")
 logger.info(f"  EXPECTED_CHAVE_PIX = {EXPECTED_CHAVE_PIX}")
 logger.info(f"  MAX_HORAS_VALIDADE = {MAX_HORAS_VALIDADE}h")
-logger.info(f"  OLLAMA_URL = {OLLAMA_URL}")
-logger.info(f"  OLLAMA_MODEL = {OLLAMA_MODEL}")
-logger.info(f"  OLLAMA_ENABLED = {OLLAMA_ENABLED}")
-logger.info(f"  OLLAMA_TIMEOUT = {OLLAMA_TIMEOUT}s")
-logger.info(f"  OLLAMA_MIN_SCORE = {OLLAMA_MIN_SCORE}")
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -121,19 +111,10 @@ class TrustScore(BaseModel):
     penalidades: list[str]
 
 
-class QwenValidation(BaseModel):
-    valido: Optional[bool] = None
-    confianca: Optional[float] = None
-    motivo: Optional[str] = None
-    tempo_segundos: Optional[float] = None
-    erro: Optional[str] = None
-
-
 class ExtractionResult(BaseModel):
     success: bool
     dados: Optional[PixData] = None
     trust: Optional[TrustScore] = None
-    validacao_visual: Optional[QwenValidation] = None
     error: Optional[str] = None
 
 
@@ -1841,156 +1822,9 @@ def calculate_trust_score(data: PixData) -> TrustScore:
     )
 
 
-# ============================================================
-# VALIDAÇÃO VISUAL — Qwen2.5-VL via Ollama
-# ============================================================
-
-def _validate_with_qwen(image_bytes: bytes, data: PixData, trust: TrustScore) -> Optional[QwenValidation]:
-    """
-    Envia imagem + dados extraídos para Qwen2.5-VL via Ollama.
-    O modelo analisa visualmente se o comprovante é real ou forjado.
-    Retorna None se Ollama estiver desabilitado ou indisponível.
-    """
-    if not OLLAMA_ENABLED:
-        return None
-    if trust.score < OLLAMA_MIN_SCORE:
-        logger.info(f"[Qwen] Pulando validação — score {trust.score} < {OLLAMA_MIN_SCORE}")
-        return None
-
-    banco_info = data.banco_origem if data.banco_origem and data.banco_origem != 'desconhecido' else 'não identificado'
-    prompt = (
-        "Você é um perito forense em documentos digitais bancários brasileiros. "
-        "Analise a imagem e determine se é um comprovante PIX autêntico ou forjado.\n\n"
-        f"Banco identificado pelo OCR: {banco_info}\n"
-        f"Dados extraídos:\n"
-        f"- Recebedor: {data.nome_recebedor or '?'} | CPF: {data.cpf_recebedor or '?'}\n"
-        f"- Pagador: {data.nome_pagador or '?'}\n"
-        f"- Valor: {data.valor_raw or '?'} | Data: {data.data_hora or '?'}\n"
-        f"- ID: {data.id_transacao or '?'} | Chave: {data.chave_pix or '?'}\n"
-        f"- Score OCR: {trust.score}\n\n"
-        "Verifique:\n"
-        f"1. O layout/cores/logo correspondem ao banco {banco_info}?\n"
-        "2. Fontes são consistentes ou há mistura de tipografias (indicando edição)?\n"
-        "3. Há texto sobreposto, bordas de recorte, ou artefatos de edição?\n"
-        "4. É screenshot de outro app (barra de status visível, bordas de WhatsApp)?\n"
-        "5. Os dados na imagem batem com os dados do OCR acima?\n"
-        "6. É realmente um comprovante de transferência PIX (não boleto, extrato, etc)?\n\n"
-        "Responda SOMENTE com JSON, sem markdown:\n"
-        '{"valido": true/false, "confianca": 0.0-1.0, "motivo": "explicação curta", '
-        '"screenshot_de_screenshot": true/false}'
-    )
-
-    img_b64 = base64.b64encode(image_bytes).decode('utf-8')
-
-    payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "images": [img_b64],
-        "stream": False,
-        "options": {
-            "temperature": 0.1,
-            "num_predict": 200,
-        },
-    }
-
-    start = time.time()
-    try:
-        with httpx.Client(timeout=OLLAMA_TIMEOUT) as client:
-            resp = client.post(f"{OLLAMA_URL}/api/generate", json=payload)
-            resp.raise_for_status()
-        elapsed = time.time() - start
-        result = resp.json()
-        response_text = result.get("response", "").strip()
-        logger.info(f"[Qwen] Resposta em {elapsed:.1f}s: {response_text[:200]}")
-
-        # Parse JSON da resposta
-        json_match = re.search(r'\{[^}]+\}', response_text)
-        if json_match:
-            import json
-            parsed = json.loads(json_match.group())
-            return QwenValidation(
-                valido=parsed.get("valido"),
-                confianca=parsed.get("confianca"),
-                motivo=parsed.get("motivo", ""),
-                tempo_segundos=round(elapsed, 1),
-            )
-        else:
-            logger.warning(f"[Qwen] Resposta não contém JSON válido: {response_text[:200]}")
-            return QwenValidation(
-                erro=f"Resposta sem JSON válido: {response_text[:100]}",
-                tempo_segundos=round(elapsed, 1),
-            )
-
-    except httpx.ConnectError as e:
-        logger.warning(f"[Qwen] Ollama não disponível em {OLLAMA_URL} — pulando validação visual: {e}")
-        return QwenValidation(erro=f"Ollama indisponível: {OLLAMA_URL}", tempo_segundos=round(time.time() - start, 1))
-    except httpx.ReadTimeout:
-        elapsed = time.time() - start
-        logger.warning(f"[Qwen] Timeout após {elapsed:.1f}s")
-        return QwenValidation(erro=f"Timeout após {elapsed:.0f}s", tempo_segundos=round(elapsed, 1))
-    except Exception as e:
-        elapsed = time.time() - start
-        logger.warning(f"[Qwen] Erro: {e}")
-        return QwenValidation(erro=str(e), tempo_segundos=round(elapsed, 1))
-
-
-def _apply_qwen_to_trust(trust: TrustScore, qwen: Optional[QwenValidation]) -> TrustScore:
-    """
-    Integra resultado do Qwen no trust score.
-    - Qwen valido=false com alta confiança → penaliza
-    - Qwen valido=true com alta confiança → bônus de resgate
-    """
-    if not qwen or qwen.valido is None or qwen.erro:
-        return trust
-
-    score = trust.score
-    detalhes = list(trust.detalhes)
-    penalidades = list(trust.penalidades)
-    nivel = trust.nivel
-
-    confianca = qwen.confianca or 0.0
-
-    if qwen.valido is False:
-        if confianca >= 0.9:
-            score -= 0.45
-            penalidades.append(f"✗ Qwen detectou fraude com alta confiança ({confianca:.0%}): {qwen.motivo} (-0.45)")
-            if score < 0.30 and nivel not in ('naoecomprovante', 'pixagendado'):
-                nivel = "pixfraudado"
-        elif confianca >= 0.7:
-            score -= 0.30
-            penalidades.append(f"✗ Qwen detectou fraude ({confianca:.0%}): {qwen.motivo} (-0.30)")
-        elif confianca >= 0.5:
-            score -= 0.15
-            penalidades.append(f"✗ Qwen suspeita de fraude ({confianca:.0%}): {qwen.motivo} (-0.15)")
-    elif qwen.valido is True:
-        if confianca >= 0.8:
-            bonus = min(0.10, 1.0 - score)
-            if bonus > 0:
-                score += bonus
-                detalhes.append(f"✓ Qwen confirmou comprovante autêntico ({confianca:.0%}) — bônus +{bonus:.2f}")
-        elif confianca >= 0.6:
-            bonus = min(0.05, 1.0 - score)
-            if bonus > 0:
-                score += bonus
-                detalhes.append(f"✓ Qwen validou visualmente ({confianca:.0%}) — bônus +{bonus:.2f}")
-
-    score = max(0.0, min(1.0, score))
-
-    # Reclassifica se Qwen detectou fraude em comprovante que parecia OK
-    if qwen.valido is False and confianca >= 0.7 and trust.score >= 0.45:
-        nivel = "pixfraudado"
-
-    return TrustScore(
-        score=round(score, 2),
-        nivel=nivel,
-        detalhes=detalhes,
-        penalidades=penalidades,
-    )
-
-
 def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> ExtractionResult:
     """
-    Fluxo unificado: OCR → Parse → Trust Score → Validação Visual (Qwen) → Score final.
+    Fluxo unificado: OCR → Parse → Trust Score.
     Usado por todos os endpoints /extract.
     """
     start = time.time()
@@ -2013,25 +1847,6 @@ def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> Ex
     data = parse_receipt(text)
     trust = calculate_trust_score(data)
 
-    # Validação visual com Qwen
-    qwen_result = None
-    ext = Path(filename).suffix.lower()
-    if ext != ".pdf":
-        qwen_result = _validate_with_qwen(file_bytes, data, trust)
-    else:
-        try:
-            doc = fitz.open(stream=file_bytes, filetype="pdf")
-            if len(doc) > 0:
-                pix = doc[0].get_pixmap(dpi=150)
-                img_bytes = pix.tobytes("png")
-                qwen_result = _validate_with_qwen(img_bytes, data, trust)
-            doc.close()
-        except Exception as e:
-            logger.warning(f"[{endpoint}] Não foi possível renderizar PDF para Qwen: {e}")
-
-    # Integrar resultado do Qwen no trust score
-    trust = _apply_qwen_to_trust(trust, qwen_result)
-
     # Registrar ID de transação para detecção de duplicatas futuras
     if data.id_transacao:
         _processed_transaction_ids[data.id_transacao] = time.time()
@@ -2049,10 +1864,8 @@ def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> Ex
     )
     if trust.penalidades:
         logger.info(f"[{endpoint}] Penalidades: {'; '.join(trust.penalidades)}")
-    if qwen_result and qwen_result.valido is not None:
-        logger.info(f"[{endpoint}] Qwen: valido={qwen_result.valido} confianca={qwen_result.confianca} motivo={qwen_result.motivo}")
 
-    return ExtractionResult(success=True, dados=data, trust=trust, validacao_visual=qwen_result)
+    return ExtractionResult(success=True, dados=data, trust=trust)
 
 
 # ============================================================
