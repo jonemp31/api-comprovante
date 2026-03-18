@@ -1116,6 +1116,53 @@ def parse_generic(text: str) -> PixData:
                         result['instituicao'] = val
         return result
 
+    # ---- Destino/Origem section layout (inline labels) ----
+    destino_idx_g = None
+    origem_idx_g = None
+    for i, line in enumerate(lines):
+        if re.match(r'^Destino$', line, re.IGNORECASE):
+            destino_idx_g = i
+        if re.match(r'^Origem$', line, re.IGNORECASE):
+            origem_idx_g = i
+
+    if destino_idx_g is not None:
+        end = origem_idx_g if origem_idx_g and origem_idx_g > destino_idx_g else min(destino_idx_g + 15, len(lines))
+        section = lines[destino_idx_g + 1:end]
+        parsed = _extract_inline_labels(section)
+        if parsed['nome']:
+            data.nome_recebedor = parsed['nome']
+        if parsed['cpf']:
+            data.cpf_recebedor = parsed['cpf']
+        if parsed['instituicao']:
+            data.instituicao_recebedor = parsed['instituicao']
+        if not data.chave_pix:
+            for sl in section:
+                m = re.match(r'^Chave\s+Pix\s+(.+)', sl, re.IGNORECASE)
+                if m:
+                    data.chave_pix = m.group(1).strip()
+                    break
+                if re.match(r'^Chave\s+Pix$', sl, re.IGNORECASE):
+                    si = section.index(sl)
+                    if si + 1 < len(section):
+                        data.chave_pix = section[si + 1].strip()
+                    break
+
+    if origem_idx_g is not None:
+        if destino_idx_g and destino_idx_g > origem_idx_g:
+            section = lines[origem_idx_g + 1:destino_idx_g]
+        else:
+            section = lines[origem_idx_g + 1:min(origem_idx_g + 15, len(lines))]
+        parsed = _extract_inline_labels(section)
+        if parsed['nome']:
+            data.nome_pagador = parsed['nome']
+        if parsed['cpf']:
+            data.cpf_pagador = parsed['cpf']
+        if parsed['instituicao']:
+            data.instituicao_pagador = parsed['instituicao']
+
+    if destino_idx_g is not None or origem_idx_g is not None:
+        return data
+
     quem_recebeu_idx = None
     quem_pagou_idx = None
     for i, line in enumerate(lines):
@@ -1276,10 +1323,18 @@ def parse_picpay(text: str) -> PixData:
         cpf = None
         inst = None
         nome_lines = []
-        for line in section:
-            # CPF mascarado: ***.824.458-**
-            if re.match(r'^[\*\.]+\d{3}', line):
+        for idx_s, line in enumerate(section):
+            # CPF mascarado: ***.824.458-** (OCR pode corromper para +IHB24.458-**)
+            # Heurística: linha curta, sem espaços, com dígitos e chars especiais
+            if (' ' not in line and len(line) <= 25
+                    and sum(1 for c in line if c.isdigit()) >= 2
+                    and re.search(r'[\*\.\-/\+]', line)):
                 cpf = line
+                # Instituição: próxima linha após CPF
+                if idx_s + 1 < len(section):
+                    candidate = section[idx_s + 1]
+                    if not re.match(r'^(De|Para|ID|Chave|\*)', candidate, re.IGNORECASE):
+                        inst = candidate
                 break
             # Instituição ou label — para de coletar nome
             if re.match(r'^(ID|Chave|CNPJ|Ouvidoria|SAC|Canal)', line, re.IGNORECASE):
@@ -1287,13 +1342,6 @@ def parse_picpay(text: str) -> PixData:
             nome_lines.append(line)
         if nome_lines:
             nome = ' '.join(nome_lines)
-        # Instituição: próxima linha após CPF
-        if cpf:
-            cpf_idx_in_section = section.index(cpf)
-            if cpf_idx_in_section + 1 < len(section):
-                candidate = section[cpf_idx_in_section + 1]
-                if not re.match(r'^(De|Para|ID|Chave|\*)', candidate, re.IGNORECASE):
-                    inst = candidate
         return nome, cpf, inst
 
     if para_idx is not None:
