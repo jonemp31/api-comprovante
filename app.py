@@ -1871,10 +1871,17 @@ def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> Ex
 
     text = extract_text(file_bytes, filename)
     if not text or len(text.strip()) < 10:
-        logger.warning(f"[{endpoint}] Texto insuficiente extraído de {filename}")
+        logger.warning(f"[{endpoint}] Texto insuficiente extraído de {filename} — não é comprovante")
+        elapsed = time.time() - start
         return ExtractionResult(
-            success=False,
-            error="Não foi possível extrair texto do arquivo. Verifique a qualidade da imagem.",
+            success=True,
+            dados=PixData(),
+            trust=TrustScore(
+                score=0.0,
+                nivel="naoecomprovante",
+                detalhes=["✗ Nenhum texto relevante extraído da imagem"],
+                penalidades=["✗ Imagem não contém um comprovante de pagamento"],
+            ),
         )
 
     data = parse_receipt(text)
