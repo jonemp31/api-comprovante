@@ -321,6 +321,8 @@ def classify_bank(text: str) -> str:
 
     if 'neon' in text_lower or 'neon pagamentos' in text_lower:
         return 'neon'
+    if 'comprovante bb' in text_lower or 'bco do brasil' in text_lower or 'banco do brasil' in text_lower:
+        return 'banco_do_brasil'
     if 'nubank' in text_lower or 'nu pagamentos' in text_lower or text.startswith('NU'):
         return 'nubank'
     if 'pagbank' in text_lower or 'pagseguro' in text_lower:
