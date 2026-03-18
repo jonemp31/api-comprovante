@@ -341,6 +341,8 @@ def classify_bank(text: str) -> str:
         return 'itau'
     if 'sicredi' in text_lower:
         return 'sicredi'
+    if 'c6' in text_lower:
+        return 'c6'
     if 'inter' in text_lower and 'banco' in text_lower:
         return 'inter'
     if 'caixa' in text_lower:
@@ -351,8 +353,6 @@ def classify_bank(text: str) -> str:
         return 'santander'
     if 'sicoob' in text_lower:
         return 'sicoob'
-    if 'c6' in text_lower:
-        return 'c6'
     if 'original' in text_lower:
         return 'original'
 
@@ -433,25 +433,66 @@ def parse_pagbank(text: str) -> PixData:
     data.id_transacao = find_id_transacao(text)
     data.chave_pix = find_chave_pix(text)
 
-    # "De" section
-    de_match = re.search(
-        r'\bDe\b\s+([A-ZÀ-Ú][A-ZÀ-Ú\s]+)\s+CPF\s+([\*\.\d\-]+).*?Institui[çc][ãa]o\s+(.*?)(?:\n\n|\bPara\b)',
-        text, re.DOTALL
-    )
-    if de_match:
-        data.nome_pagador = de_match.group(1).strip()
-        data.cpf_pagador = de_match.group(2).strip()
-        data.instituicao_pagador = de_match.group(3).strip()
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
 
-    # "Para" section
-    para_match = re.search(
-        r'\bPara\b\s+([A-ZÀ-Ú][A-ZÀ-Ú\s]+)\s+CPF\s+([\*\.\d\-]+).*?Institui[çc][ãa]o\s+(.*?)(?:\n\n|\bChave\b|\bPara\s+d)',
-        text, re.DOTALL
-    )
-    if para_match:
-        data.nome_recebedor = para_match.group(1).strip()
-        data.cpf_recebedor = para_match.group(2).strip()
-        data.instituicao_recebedor = para_match.group(3).strip()
+    # Encontra marcadores "De" e "Para" (linhas isoladas)
+    de_idx = None
+    para_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r'^De$', line, re.IGNORECASE) and de_idx is None:
+            de_idx = i
+        if re.match(r'^Para$', line, re.IGNORECASE) and para_idx is None:
+            para_idx = i
+
+    def _parse_de_para_section(section_lines):
+        """Parse De/Para section: first line = nome, depois CPF/Instituição."""
+        result = {'nome': None, 'cpf': None, 'instituicao': None}
+        if not section_lines:
+            return result
+        first = section_lines[0]
+        if not re.match(r'^(CPF|CNPJ|Institui|Banco|Chave|Dados|Valor)', first, re.IGNORECASE):
+            result['nome'] = first
+        for i, line in enumerate(section_lines):
+            if re.match(r'^(CPF|CNPJ|CPF\s*/?\s*CNP)', line, re.IGNORECASE) and i + 1 < len(section_lines) and not result['cpf']:
+                result['cpf'] = section_lines[i + 1].strip()
+            if re.match(r'^Institui', line, re.IGNORECASE) and i + 1 < len(section_lines) and not result['instituicao']:
+                result['instituicao'] = section_lines[i + 1].strip()
+        return result
+
+    if de_idx is not None:
+        end = para_idx if para_idx and para_idx > de_idx else min(de_idx + 10, len(lines))
+        section = lines[de_idx + 1:end]
+        parsed = _parse_de_para_section(section)
+        if parsed['nome']:
+            data.nome_pagador = parsed['nome']
+        if parsed['cpf']:
+            data.cpf_pagador = parsed['cpf']
+        if parsed['instituicao']:
+            data.instituicao_pagador = parsed['instituicao']
+
+    if para_idx is not None:
+        end = min(para_idx + 10, len(lines))
+        for i in range(para_idx + 1, min(para_idx + 10, len(lines))):
+            if i < len(lines) and re.match(r'^(Chave|Para\s+d[uú]vidas)', lines[i], re.IGNORECASE):
+                end = i
+                break
+        section = lines[para_idx + 1:end]
+        parsed = _parse_de_para_section(section)
+        if parsed['nome']:
+            data.nome_recebedor = parsed['nome']
+        if parsed['cpf']:
+            data.cpf_recebedor = parsed['cpf']
+        if parsed['instituicao']:
+            data.instituicao_recebedor = parsed['instituicao']
+
+    # ID transação PagBank: "Código da transação Pix" pode ter IDs sem prefixo E
+    if not data.id_transacao:
+        for i, line in enumerate(lines):
+            if re.match(r'^C.digo\s+da\s+transa.+\s+Pix', line, re.IGNORECASE) and i + 1 < len(lines):
+                val = lines[i + 1].strip()
+                if len(val) >= 20:
+                    data.id_transacao = val
+                break
 
     return data
 
@@ -809,10 +850,10 @@ def _parse_section_line_by_line(lines: list[str]) -> dict:
     """Extrai Nome, CPF/CNPJ, Instituição/Banco de uma seção linha a linha."""
     result = {'nome': None, 'cpf': None, 'instituicao': None}
     for i, line in enumerate(lines):
-        # Nome: label "NOME" seguido do valor na próxima linha
-        if re.match(r'^NOME$', line, re.IGNORECASE) and i + 1 < len(lines):
+        # Nome: label "NOME" ou "Para" ou "De" seguido do valor na próxima linha
+        if re.match(r'^(NOME|Para|De)$', line, re.IGNORECASE) and i + 1 < len(lines) and not result['nome']:
             val = lines[i + 1].strip()
-            if val and not re.match(r'^(CPF|CNPJ|CNP|BANCO|CHAVE|DADOS|INSTITUIÇÃO)', val, re.IGNORECASE):
+            if val and not re.match(r'^(CPF|CNPJ|CNP|BANCO|CHAVE|DADOS|INSTITUIÇÃO|Para|De)', val, re.IGNORECASE):
                 result['nome'] = val
         # CPF/CNPJ: label seguido do valor na próxima linha
         if re.match(r'^(CPF|CNPJ|CPF\s*/?\s*CNP\W*J?|CNP\W*J?)$', line, re.IGNORECASE) and i + 1 < len(lines):
@@ -899,6 +940,101 @@ def parse_generic(text: str) -> PixData:
                     if val.startswith('E'):
                         data.id_transacao = val
                     break
+
+        return data
+
+    # ---- C6-style: "Banco: CODE - NAME" + "Conta de origem" layout ----
+    conta_origem_idx = None
+    banco_lines = []
+    for i, line in enumerate(lines):
+        if re.match(r'^Conta\s+de\s+origem', line, re.IGNORECASE):
+            conta_origem_idx = i
+        m = re.match(r'^Banco:\s*\d+\s*-\s*(.+)', line, re.IGNORECASE)
+        if m:
+            banco_lines.append((i, m.group(1).strip()))
+
+    if conta_origem_idx is not None and banco_lines:
+        # Recebedor: primeiro "Banco:" antes de "Conta de origem"
+        for idx, inst in banco_lines:
+            if idx < conta_origem_idx:
+                data.instituicao_recebedor = inst
+                if idx > 0:
+                    candidate = lines[idx - 1]
+                    if len(candidate) > 2 and not re.match(r'^(Banco|Ag[eê]ncia|Conta|CPF|CNPJ|Chave|Valor|ID|C.digo|Data|Pix)', candidate, re.IGNORECASE):
+                        data.nome_recebedor = candidate
+                break
+        # Pagador: primeiro "Banco:" depois de "Conta de origem"
+        for idx, inst in banco_lines:
+            if idx > conta_origem_idx:
+                data.instituicao_pagador = inst
+                for j in range(idx - 1, conta_origem_idx, -1):
+                    candidate = lines[j]
+                    if len(candidate) > 2 and not re.match(r'^(Banco|Ag[eê]ncia|Conta|CPF|CNPJ|Chave|Valor|ID|C.digo|Data|Pix)', candidate, re.IGNORECASE):
+                        data.nome_pagador = candidate
+                        break
+                break
+        # CPF / CNPJ
+        for i, line in enumerate(lines):
+            if re.match(r'^(CPF|CNPJ|CPF\s*/?\s*CNP)', line, re.IGNORECASE) and i + 1 < len(lines):
+                cpf_val = lines[i + 1].strip()
+                if i < conta_origem_idx:
+                    if not data.cpf_recebedor:
+                        data.cpf_recebedor = cpf_val
+                else:
+                    if not data.cpf_pagador:
+                        data.cpf_pagador = cpf_val
+
+        return data
+
+    # ---- De/Para standalone section layout ----
+    de_idx = None
+    para_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r'^De$', line, re.IGNORECASE) and de_idx is None:
+            de_idx = i
+        if re.match(r'^Para$', line, re.IGNORECASE) and para_idx is None:
+            para_idx = i
+
+    if de_idx is not None or para_idx is not None:
+        def _parse_de_para(section_lines):
+            result = {'nome': None, 'cpf': None, 'instituicao': None}
+            if not section_lines:
+                return result
+            first = section_lines[0]
+            if not re.match(r'^(CPF|CNPJ|Institui|Banco|Chave|Dados|Valor)', first, re.IGNORECASE):
+                result['nome'] = first
+            for i, line in enumerate(section_lines):
+                if re.match(r'^(CPF|CNPJ|CPF\s*/?\s*CNP)', line, re.IGNORECASE) and i + 1 < len(section_lines) and not result['cpf']:
+                    result['cpf'] = section_lines[i + 1].strip()
+                if re.match(r'^Institui', line, re.IGNORECASE) and i + 1 < len(section_lines) and not result['instituicao']:
+                    result['instituicao'] = section_lines[i + 1].strip()
+            return result
+
+        if de_idx is not None:
+            end = para_idx if para_idx and para_idx > de_idx else min(de_idx + 10, len(lines))
+            section = lines[de_idx + 1:end]
+            parsed = _parse_de_para(section)
+            if parsed['nome'] and not data.nome_pagador:
+                data.nome_pagador = parsed['nome']
+            if parsed['cpf'] and not data.cpf_pagador:
+                data.cpf_pagador = parsed['cpf']
+            if parsed['instituicao'] and not data.instituicao_pagador:
+                data.instituicao_pagador = parsed['instituicao']
+
+        if para_idx is not None:
+            end = min(para_idx + 10, len(lines))
+            for i in range(para_idx + 1, min(para_idx + 10, len(lines))):
+                if i < len(lines) and re.match(r'^(Chave|Para\s+d[uú]vidas)', lines[i], re.IGNORECASE):
+                    end = i
+                    break
+            section = lines[para_idx + 1:end]
+            parsed = _parse_de_para(section)
+            if parsed['nome'] and not data.nome_recebedor:
+                data.nome_recebedor = parsed['nome']
+            if parsed['cpf'] and not data.cpf_recebedor:
+                data.cpf_recebedor = parsed['cpf']
+            if parsed['instituicao'] and not data.instituicao_recebedor:
+                data.instituicao_recebedor = parsed['instituicao']
 
         return data
 
@@ -1093,6 +1229,8 @@ BANK_PARSERS = {
     'cresol': parse_cresol,
     'itau': parse_itau,
     'caixa': parse_caixa,
+    'c6': parse_generic,
+    'santander': parse_generic,
 }
 
 
@@ -1336,8 +1474,18 @@ def calculate_trust_score(data: PixData) -> TrustScore:
         # Valida se a chave PIX bate com a esperada
         chave_limpa = re.sub(r'[\s\(\)\-\+]', '', data.chave_pix)
         expected_limpa = re.sub(r'[\s\(\)\-\+]', '', EXPECTED_CHAVE_PIX)
+        # Chave completa confere
         if expected_limpa in chave_limpa or chave_limpa in expected_limpa:
             detalhes.append(f"✓ Chave PIX confere com a esperada ({EXPECTED_CHAVE_PIX})")
+        # Chave mascarada — compara últimos 4 dígitos
+        elif len(expected_limpa) >= 4:
+            ultimos4_expected = re.sub(r'[^\d]', '', EXPECTED_CHAVE_PIX)[-4:]
+            digits_chave = re.sub(r'[^\d]', '', data.chave_pix)
+            if len(digits_chave) >= 4 and digits_chave[-4:] == ultimos4_expected:
+                detalhes.append(f"✓ Chave PIX parcial confere (últimos 4 dígitos: {ultimos4_expected})")
+            else:
+                score -= 0.25
+                penalidades.append(f"✗ Chave PIX '{data.chave_pix}' NÃO confere com '{EXPECTED_CHAVE_PIX}' (-0.25)")
         else:
             score -= 0.25
             penalidades.append(f"✗ Chave PIX '{data.chave_pix}' NÃO confere com '{EXPECTED_CHAVE_PIX}' (-0.25)")
