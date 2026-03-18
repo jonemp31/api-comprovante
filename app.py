@@ -304,8 +304,10 @@ def find_data(text: str) -> Optional[str]:
             r'[Ss]ábado,?\s*(\d{1,2}\s+de\s+\w+\s+de\s+\d{4},?\s+às\s+\d{2}:\d{2}:\d{2})',
             r'(\d{2}/\w{3}/\d{4}\s*[-–]\s*\d{2}:\d{2}:\d{2})',  # 02/mar/2026 - 19:44:50
             r'(\d{2}/\w{3}/\d{4}\s*[-–]\s*\d{2}:\d{2})',  # 02/mar/2026 - 19:44
+            r'(\d{1,2}/\w{3,10}/\d{4}\s+às\s+\d{1,2}h\d{2})',  # 17/março/2026 às 17h00
             r'(\d{2}/\d{2}/\d{4})',  # Só data
             r'(\d{1,2}\s+\w{3}\s+\d{4},\s*\d{1,2}:\d{2}(?::\d{2})?)',  # 18 mar 2026, 3:50:48
+            r'(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})',  # 17 de março de 2026
         ]
         for pattern in patterns:
             match = re.search(pattern, t)
@@ -679,9 +681,9 @@ def parse_mercado_pago(text: str) -> PixData:
     de_idx = None
     para_idx = None
     for i, line in enumerate(lines):
-        if re.match(r'^[e•]?\s*De$', line, re.IGNORECASE):
+        if re.match(r'^[e•o>]?\s*De$', line, re.IGNORECASE):
             de_idx = i
-        if re.match(r'^[e•]?\s*Para$', line, re.IGNORECASE):
+        if re.match(r'^[e•o>]?\s*Para$', line, re.IGNORECASE):
             para_idx = i
 
     # If valor not found, look for standalone number (OCR issues like "R$ 5O")
@@ -1919,9 +1921,9 @@ def _validate_with_qwen(image_bytes: bytes, data: PixData, trust: TrustScore) ->
                 tempo_segundos=round(elapsed, 1),
             )
 
-    except httpx.ConnectError:
-        logger.warning("[Qwen] Ollama não disponível — pulando validação visual")
-        return None
+    except httpx.ConnectError as e:
+        logger.warning(f"[Qwen] Ollama não disponível em {OLLAMA_URL} — pulando validação visual: {e}")
+        return QwenValidation(erro=f"Ollama indisponível: {OLLAMA_URL}", tempo_segundos=round(time.time() - start, 1))
     except httpx.ReadTimeout:
         elapsed = time.time() - start
         logger.warning(f"[Qwen] Timeout após {elapsed:.1f}s")
