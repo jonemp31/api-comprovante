@@ -112,10 +112,21 @@ class TrustScore(BaseModel):
 
 
 class ExtractionResult(BaseModel):
-    success: bool
-    dados: Optional[PixData] = None
-    trust: Optional[TrustScore] = None
-    error: Optional[str] = None
+    bancodeorigem: Optional[str] = None
+    nomedocliente: Optional[str] = None
+    cpfdocliente: Optional[str] = None
+    intituicaobanco: Optional[str] = None
+    nomerecebedor: Optional[str] = None
+    cpfrecebedor: Optional[str] = None
+    intituicaorecebedor: Optional[str] = None
+    chavepix: Optional[str] = None
+    valor: Optional[float] = None
+    valorraw: Optional[str] = None
+    datahora: Optional[str] = None
+    idtransacao: Optional[str] = None
+    tipo: Optional[str] = None
+    rawtext: Optional[str] = None
+    detalhes: str = "comprovantenaodetectado"
 
 
 class Base64Input(BaseModel):
@@ -1822,6 +1833,27 @@ def calculate_trust_score(data: PixData) -> TrustScore:
     )
 
 
+def _build_result(data: PixData, trust: TrustScore) -> ExtractionResult:
+    """Monta ExtractionResult flat a partir de PixData + TrustScore."""
+    return ExtractionResult(
+        bancodeorigem=data.banco_origem,
+        nomedocliente=data.nome_pagador,
+        cpfdocliente=data.cpf_pagador,
+        intituicaobanco=data.instituicao_pagador,
+        nomerecebedor=data.nome_recebedor,
+        cpfrecebedor=data.cpf_recebedor,
+        intituicaorecebedor=data.instituicao_recebedor,
+        chavepix=data.chave_pix,
+        valor=data.valor,
+        valorraw=data.valor_raw,
+        datahora=data.data_hora,
+        idtransacao=data.id_transacao,
+        tipo=data.tipo,
+        rawtext=data.raw_text,
+        detalhes=trust.nivel,
+    )
+
+
 def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> ExtractionResult:
     """
     Fluxo unificado: OCR → Parse → Trust Score.
@@ -1833,16 +1865,7 @@ def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> Ex
     text = extract_text(file_bytes, filename)
     if not text or len(text.strip()) < 10:
         logger.warning(f"[{endpoint}] Texto insuficiente extraído de {filename} — não é comprovante")
-        return ExtractionResult(
-            success=True,
-            dados=PixData(),
-            trust=TrustScore(
-                score=0.0,
-                nivel="naoecomprovante",
-                detalhes=["✗ Nenhum texto relevante extraído da imagem"],
-                penalidades=["✗ Imagem não contém um comprovante de pagamento"],
-            ),
-        )
+        return ExtractionResult(detalhes="comprovantenaodetectado")
 
     data = parse_receipt(text)
     trust = calculate_trust_score(data)
@@ -1865,7 +1888,7 @@ def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> Ex
     if trust.penalidades:
         logger.info(f"[{endpoint}] Penalidades: {'; '.join(trust.penalidades)}")
 
-    return ExtractionResult(success=True, dados=data, trust=trust)
+    return _build_result(data, trust)
 
 
 # ============================================================
@@ -1882,7 +1905,7 @@ async def extract_from_upload(file: UploadFile = File(...)):
         return _process_and_validate(file_bytes, filename, "/extract")
     except Exception as e:
         logger.error(f"[/extract] Erro ao processar {filename}: {e}")
-        return ExtractionResult(success=False, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/extract/base64", response_model=ExtractionResult)
@@ -1895,13 +1918,12 @@ async def extract_from_base64(input_data: Base64Input):
         return _process_and_validate(file_bytes, filename, "/extract/base64")
     except Exception as e:
         logger.error(f"[/extract/base64] Erro ao processar {filename}: {e}")
-        return ExtractionResult(success=False, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/extract/url", response_model=ExtractionResult)
 async def extract_from_url(input_data: UrlInput):
     """Baixa comprovante de uma URL, analisa e retorna o resultado."""
-    start = time.time()
     url = input_data.url
     filename = input_data.filename or url.rsplit('/', 1)[-1].split('?')[0] or "comprovante.jpg"
     logger.info(f"[/extract/url] URL: {url}")
@@ -1911,38 +1933,17 @@ async def extract_from_url(input_data: UrlInput):
             resp.raise_for_status()
             file_bytes = resp.content
         logger.info(f"[/extract/url] Baixado: {filename} ({len(file_bytes)} bytes)")
-
-        text = extract_text(file_bytes, filename)
-        if not text or len(text.strip()) < 10:
-            logger.warning(f"[/extract/url] Texto insuficiente de {filename}")
-            return ExtractionResult(
-                success=False,
-                error="N\u00e3o foi poss\u00edvel extrair texto do arquivo baixado.",
-            )
-
-        data = parse_receipt(text)
-        trust = calculate_trust_score(data)
-        elapsed = time.time() - start
-
-        logger.info(
-            f"[/extract/url] {filename} | banco={data.banco_origem} | score={trust.score} | nivel={trust.nivel}"
-            f" | valor={data.valor} | recebedor={data.nome_recebedor} | pagador={data.nome_pagador}"
-            f" | {elapsed:.2f}s"
-        )
-        if trust.penalidades:
-            logger.info(f"[/extract/url] Penalidades: {'; '.join(trust.penalidades)}")
-
-        return ExtractionResult(success=True, dados=data, trust=trust)
+        return _process_and_validate(file_bytes, filename, "/extract/url")
 
     except httpx.HTTPStatusError as e:
         logger.error(f"[/extract/url] Erro HTTP ao baixar {url}: {e.response.status_code}")
-        return ExtractionResult(success=False, error=f"Erro ao baixar arquivo: HTTP {e.response.status_code}")
+        raise HTTPException(status_code=502, detail=f"Erro ao baixar arquivo: HTTP {e.response.status_code}")
     except httpx.RequestError as e:
         logger.error(f"[/extract/url] Erro de conex\u00e3o ao baixar {url}: {e}")
-        return ExtractionResult(success=False, error=f"Erro de conex\u00e3o: {e}")
+        raise HTTPException(status_code=502, detail="Erro de conex\u00e3o ao baixar URL")
     except Exception as e:
         logger.error(f"[/extract/url] Erro ao processar {url}: {e}")
-        return ExtractionResult(success=False, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/ocr", response_model=dict)
