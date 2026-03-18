@@ -26,7 +26,6 @@ from typing import Optional
 from pathlib import Path
 
 import httpx
-import pytesseract
 from PIL import Image, ImageOps
 import fitz  # pymupdf
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
@@ -121,23 +120,18 @@ class UrlInput(BaseModel):
 
 
 # ============================================================
-# OCR ENGINE
+# OCR ENGINE — Tesseract
 # ============================================================
 
+import pytesseract
+
+
 def preprocess_image(img: Image.Image) -> Image.Image:
-    """Pré-processamento de imagem para melhorar OCR."""
-    # 1. Resize 2x — screenshots WhatsApp (~680px) ficam pequenas pro Tesseract.
-    #    Dobrar a resolução melhora segmentação de caracteres e fontes pequenas.
-    img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)
-
-    # 2. Grayscale — remove fundos coloridos (azul BB, roxo Nubank, verde Cresol)
-    #    que competem com o texto no reconhecimento.
+    """Pré-processamento para melhorar OCR: resize 2x, grayscale, autocontrast."""
+    w, h = img.size
+    img = img.resize((w * 2, h * 2), Image.LANCZOS)
     img = img.convert('L')
-
-    # 3. Autocontrast — estica histograma: pixel mais escuro→preto, mais claro→branco.
-    #    Resolve CPFs mascarados (***) renderizados em cinza claro que o Tesseract ignora.
-    img = ImageOps.autocontrast(img, cutoff=2)
-
+    img = ImageOps.autocontrast(img)
     return img
 
 
@@ -145,10 +139,7 @@ def extract_text_from_image(image_bytes: bytes) -> str:
     """Extrai texto de uma imagem usando Tesseract OCR."""
     img = Image.open(io.BytesIO(image_bytes))
     img = preprocess_image(img)
-
-    # psm 6 = bloco de texto uniforme (ideal para recibos)
-    # oem 3 = engine LSTM (rede neural, mais precisa)
-    text = pytesseract.image_to_string(img, lang="por", config="--psm 6 --oem 3")
+    text = pytesseract.image_to_string(img, lang='por')
     return text
 
 
@@ -1547,23 +1538,44 @@ def calculate_trust_score(data: PixData) -> TrustScore:
 
     dados_basicos_ok = recebedor_ok and data.data_hora and data.id_transacao
 
+    # Verifica se destino confere (nome OU cpf do recebedor bate)
+    destino_ok = recebedor_ok or cpf_ok
+
     if is_agendado:
         nivel = "pixagendado"
-    elif not dados_basicos_ok or score < 0.45 or not recebedor_ok:
+    elif score < 0.30:
+        nivel = "pixinvalido"
+    elif not dados_basicos_ok or score < 0.45:
+        nivel = "pixsuspeito"
+    elif not destino_ok:
+        nivel = "pixdestinoerrado"
+    elif not data.valor or data.valor <= 0:
         nivel = "pixsuspeito"
     elif horas_diferenca is not None and horas_diferenca > MAX_HORAS_VALIDADE:
-        nivel = "pixsuspeito"
-    elif not data.valor or data.valor <= 0:
-        nivel = "pixsemvalor"
+        # Real, acima de 24h
+        if data.valor < 10:
+            nivel = "pixvalidomais24horaspobre"
+        elif data.valor > 20:
+            nivel = "pixvalidomais24horaspresente"
+        else:
+            nivel = "pixvalidomais24horas"
+    elif horas_diferenca is not None and horas_diferenca <= MAX_HORAS_VALIDADE and horas_diferenca > 1:
+        # Real, entre 1h e 24h
+        if data.valor < 10:
+            nivel = "pix24horaspobre"
+        elif data.valor > 20:
+            nivel = "pix24horaspresente"
+        else:
+            nivel = "pix24horas"
     elif horas_diferenca is not None and horas_diferenca <= 1:
+        # Real, menos de 1h
         if data.valor < 10:
             nivel = "pixpobre"
+        elif data.valor > 20:
+            nivel = "pixvalidopresente"
         else:
             nivel = "pixvalido"
-    elif horas_diferenca is not None and horas_diferenca <= MAX_HORAS_VALIDADE:
-        nivel = "pix24horas"
     else:
-        # Data não pôde ser interpretada mas outros dados conferem
         nivel = "pixsuspeito"
 
     return TrustScore(

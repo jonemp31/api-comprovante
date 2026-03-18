@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# Install tesseract + Portuguese language pack
+# System deps (tesseract + por lang + curl for healthcheck)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     tesseract-ocr \
