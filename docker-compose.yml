@@ -11,9 +11,9 @@ services:
       replicas: 1
       resources:
         limits:
-          memory: 6144M
+          memory: 8192M
         reservations:
-          memory: 3072M
+          memory: 4096M
       restart_policy:
         condition: on-failure
         delay: 10s
@@ -35,7 +35,7 @@ services:
       - EXPECTED_CHAVE_PIX=16991500219
       - MAX_HORAS_VALIDADE=24
       - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5-vl:3b
+      - OLLAMA_MODEL=qwen2.5vl:3b
       - OLLAMA_ENABLED=true
       - OLLAMA_TIMEOUT=120
       - OLLAMA_MIN_SCORE=0.45
