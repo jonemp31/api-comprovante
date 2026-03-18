@@ -1555,13 +1555,8 @@ def calculate_trust_score(data: PixData) -> TrustScore:
     elif not data.valor or data.valor <= 0:
         nivel = "pixsuspeito"
     elif horas_diferenca is not None and horas_diferenca > MAX_HORAS_VALIDADE:
-        # Real, acima de 24h
-        if data.valor < 10:
-            nivel = "pixvalidomais24horaspobre"
-        elif data.valor > 20:
-            nivel = "pixvalidomais24horaspresente"
-        else:
-            nivel = "pixvalidomais24horas"
+        # Real, acima de 24h (valor não importa)
+        nivel = "pixvalidomais24horas"
     elif horas_diferenca is not None and horas_diferenca <= MAX_HORAS_VALIDADE and horas_diferenca > 1:
         # Real, entre 1h e 24h
         if data.valor < 10:
