@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Optional
 from pathlib import Path
 
+import httpx
 import pytesseract
 from PIL import Image, ImageOps
 import fitz  # pymupdf
@@ -112,6 +113,11 @@ class ExtractionResult(BaseModel):
 class Base64Input(BaseModel):
     file: str
     filename: str = "comprovante.jpg"
+
+
+class UrlInput(BaseModel):
+    url: str
+    filename: str = ""
 
 
 # ============================================================
@@ -1495,6 +1501,53 @@ async def extract_from_base64(input_data: Base64Input):
 
     except Exception as e:
         logger.error(f"[/extract/base64] Erro ao processar {filename}: {e}")
+        return ExtractionResult(success=False, error=str(e))
+
+
+@app.post("/extract/url", response_model=ExtractionResult)
+async def extract_from_url(input_data: UrlInput):
+    """Baixa comprovante de uma URL, analisa e retorna o resultado."""
+    start = time.time()
+    url = input_data.url
+    filename = input_data.filename or url.rsplit('/', 1)[-1].split('?')[0] or "comprovante.jpg"
+    logger.info(f"[/extract/url] URL: {url}")
+    try:
+        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            file_bytes = resp.content
+        logger.info(f"[/extract/url] Baixado: {filename} ({len(file_bytes)} bytes)")
+
+        text = extract_text(file_bytes, filename)
+        if not text or len(text.strip()) < 10:
+            logger.warning(f"[/extract/url] Texto insuficiente de {filename}")
+            return ExtractionResult(
+                success=False,
+                error="N\u00e3o foi poss\u00edvel extrair texto do arquivo baixado.",
+            )
+
+        data = parse_receipt(text)
+        trust = calculate_trust_score(data)
+        elapsed = time.time() - start
+
+        logger.info(
+            f"[/extract/url] {filename} | banco={data.banco_origem} | score={trust.score} | nivel={trust.nivel}"
+            f" | valor={data.valor} | recebedor={data.nome_recebedor} | pagador={data.nome_pagador}"
+            f" | {elapsed:.2f}s"
+        )
+        if trust.penalidades:
+            logger.info(f"[/extract/url] Penalidades: {'; '.join(trust.penalidades)}")
+
+        return ExtractionResult(success=True, dados=data, trust=trust)
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[/extract/url] Erro HTTP ao baixar {url}: {e.response.status_code}")
+        return ExtractionResult(success=False, error=f"Erro ao baixar arquivo: HTTP {e.response.status_code}")
+    except httpx.RequestError as e:
+        logger.error(f"[/extract/url] Erro de conex\u00e3o ao baixar {url}: {e}")
+        return ExtractionResult(success=False, error=f"Erro de conex\u00e3o: {e}")
+    except Exception as e:
+        logger.error(f"[/extract/url] Erro ao processar {url}: {e}")
         return ExtractionResult(success=False, error=str(e))
 
 
