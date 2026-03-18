@@ -181,10 +181,33 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
 
 def clean_text(text: str) -> str:
     """Normaliza texto OCR."""
+    # Remove null bytes e caracteres de controle (comum em PDFs do BB)
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
     # Corrige artefatos comuns do Tesseract
-    text = text.replace("'", "'").replace(""", '"').replace(""", '"')
-    text = text.replace("—", "-").replace("–", "-")
+    text = text.replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
+    text = text.replace("\u2014", "-").replace("\u2013", "-")
     return text
+
+
+def _nomes_correspondem(nome_extraido: str, nome_esperado: str) -> bool:
+    """Compara nomes com tolerancia a erros de OCR/extracao de PDF.
+    Aceita se pelo menos 2 palavras significativas (>=3 chars) do nome extraido
+    aparecem no nome esperado.
+    """
+    if not nome_extraido or not nome_esperado:
+        return False
+    extraido_lower = nome_extraido.lower()
+    esperado_lower = nome_esperado.lower()
+    # Substring exata (caso ideal)
+    if esperado_lower in extraido_lower or extraido_lower in esperado_lower:
+        return True
+    # Word-based: palavras significativas (>= 3 chars)
+    palavras_extraidas = [w for w in re.split(r'\s+', extraido_lower) if len(w) >= 3]
+    palavras_esperadas = [w for w in re.split(r'\s+', esperado_lower) if len(w) >= 3]
+    if not palavras_extraidas or not palavras_esperadas:
+        return False
+    matches = sum(1 for p in palavras_extraidas if p in palavras_esperadas)
+    return matches >= 2 or (matches >= 1 and len(palavras_extraidas) == 1)
 
 
 def find_cpf(text: str, context_hint: str = "") -> Optional[str]:
@@ -1368,7 +1391,7 @@ def calculate_trust_score(data: PixData) -> TrustScore:
     if data.nome_recebedor and len(data.nome_recebedor) > 3:
         detalhes.append(f"✓ Nome recebedor: {data.nome_recebedor}")
         # Valida se o nome bate com o esperado
-        if EXPECTED_NOME_RECEBEDOR.lower() in data.nome_recebedor.lower() or data.nome_recebedor.lower() in EXPECTED_NOME_RECEBEDOR.lower():
+        if _nomes_correspondem(data.nome_recebedor, EXPECTED_NOME_RECEBEDOR):
             detalhes.append(f"✓ Nome recebedor confere com o esperado ({EXPECTED_NOME_RECEBEDOR})")
         else:
             score -= 0.30
@@ -1531,7 +1554,7 @@ def calculate_trust_score(data: PixData) -> TrustScore:
     recebedor_ok = True
     if not data.nome_recebedor or len(data.nome_recebedor) <= 3:
         recebedor_ok = False
-    elif EXPECTED_NOME_RECEBEDOR.lower() not in data.nome_recebedor.lower() and data.nome_recebedor.lower() not in EXPECTED_NOME_RECEBEDOR.lower():
+    elif not _nomes_correspondem(data.nome_recebedor, EXPECTED_NOME_RECEBEDOR):
         recebedor_ok = False
 
     cpf_ok = False
