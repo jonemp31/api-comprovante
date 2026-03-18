@@ -69,6 +69,10 @@ OLLAMA_MIN_SCORE = float(os.getenv("OLLAMA_MIN_SCORE", "0.45"))
 # Fuso horário de Brasília (UTC-3)
 BRT = timezone(timedelta(hours=-3))
 
+# Registro de IDs de transação processados (detecção de duplicatas)
+_processed_transaction_ids: dict[str, float] = {}  # {id: timestamp}
+_DUPLICATE_TTL_HOURS = 720  # 30 dias
+
 logger.info("=== Configuração carregada ===")
 logger.info(f"  EXPECTED_NOME_RECEBEDOR = {EXPECTED_NOME_RECEBEDOR}")
 logger.info(f"  EXPECTED_CPF_RECEBEDOR_PARTIAL = {EXPECTED_CPF_RECEBEDOR_PARTIAL}")
@@ -326,6 +330,15 @@ def find_id_transacao(text: str) -> Optional[str]:
     return None
 
 
+def _normalize_chave_pix(chave: str) -> str:
+    """Normaliza chave PIX removendo formatação: +55, (), -, espaços, *."""
+    # Remove +55 prefix
+    cleaned = re.sub(r'^\+?55\s*', '', chave.strip())
+    # Remove formatting chars
+    cleaned = re.sub(r'[\(\)\-\s\*]', '', cleaned)
+    return cleaned
+
+
 def find_chave_pix(text: str) -> Optional[str]:
     """Encontra chave PIX no texto."""
     patterns = [
@@ -371,39 +384,53 @@ def find_nome(text: str, section: str, labels: list[str]) -> Optional[str]:
 def classify_bank(text: str) -> str:
     """Identifica o banco emissor do comprovante."""
     text_lower = text.lower()
+    # Normaliza OCR artifacts para melhorar detecção
+    text_norm = re.sub(r'[\s]+', ' ', text_lower)
 
     if 'neon' in text_lower or 'neon pagamentos' in text_lower:
         return 'neon'
-    if 'comprovante bb' in text_lower or 'bco do brasil' in text_lower or 'banco do brasil' in text_lower:
+    if any(kw in text_lower for kw in ['comprovante bb', 'bco do brasil', 'banco do brasil', 'bco brasil']):
         return 'banco_do_brasil'
-    if 'nubank' in text_lower or 'nu pagamentos' in text_lower or text.startswith('NU'):
+    if any(kw in text_lower for kw in ['nubank', 'nu pagamentos', 'nu - pagamentos', 'n u pagamentos']) or text.startswith('NU'):
         return 'nubank'
-    if 'pagbank' in text_lower or 'pagseguro' in text_lower:
+    if any(kw in text_lower for kw in ['pagbank', 'pagseguro', 'pag bank', 'pag seguro', 'pagseg']):
         return 'pagbank'
-    if 'mercado pago' in text_lower:
+    if any(kw in text_lower for kw in ['mercado pago', 'mercadopago', 'mercado libre']):
         return 'mercado_pago'
-    if 'picpay' in text_lower:
+    if any(kw in text_lower for kw in ['picpay', 'pic pay']):
         return 'picpay'
     if 'cresol' in text_lower:
         return 'cresol'
-    if 'itaú' in text_lower or 'itau' in text_lower:
+    if any(kw in text_lower for kw in ['itaú', 'itau', 'itaü', 'ita\u00fa']):
         return 'itau'
     if 'sicredi' in text_lower:
         return 'sicredi'
-    if 'c6' in text_lower:
+    if re.search(r'\bc6\b', text_lower) or 'c6 bank' in text_lower or 'bco c6' in text_lower:
         return 'c6'
-    if 'inter' in text_lower and 'banco' in text_lower:
+    if any(kw in text_lower for kw in ['banco inter', 'bco inter', 'inter s.a', 'inter sa']):
         return 'inter'
-    if 'caixa' in text_lower:
+    if any(kw in text_lower for kw in ['caixa econ', 'caixa eco', 'caixa federal', 'lotérica', 'loterica']):
         return 'caixa'
-    if 'bradesco' in text_lower:
+    if any(kw in text_lower for kw in ['bradesco', 'bco bradesco']):
         return 'bradesco'
     if 'santander' in text_lower:
         return 'santander'
     if 'sicoob' in text_lower:
         return 'sicoob'
-    if 'original' in text_lower:
+    if any(kw in text_lower for kw in ['original', 'banco original']):
         return 'original'
+    # Fallback: tenta detectar pelo ISPB da instituição recebedor/pagador
+    ispb_map = {
+        '60701190': 'itau', '00000000': 'banco_do_brasil', '60746948': 'bradesco',
+        '90400888': 'santander', '18236120': 'nubank', '10573521': 'mercado_pago',
+        '60900292': 'caixa', '04902979': 'banco_do_brasil', '22896431': 'pagbank',
+        '20855875': 'inter', '07689002': 'sicredi', '08561701': 'pagbank',
+        '13370835': 'picpay', '31872495': 'c6', '87711670': 'sicredi',
+        '02038232': 'sicoob', '60746948': 'bradesco',
+    }
+    for ispb, bank in ispb_map.items():
+        if ispb in text:
+            return bank
 
     return 'desconhecido'
 
@@ -1520,18 +1547,65 @@ def is_data_dentro_validade(data_hora_str: str, max_horas: int = MAX_HORAS_VALID
     return True, None
 
 
+def _cpf_fuzzy_match(cpf_extraido: str, expected_partial: str) -> tuple[bool, str]:
+    """
+    Matching fuzzy de CPF tolerante a erros de OCR.
+    Retorna (match, nivel) onde nivel é 'exato', 'fuzzy' ou 'falha'.
+    """
+    if not cpf_extraido or not expected_partial:
+        return False, 'falha'
+    
+    cpf_limpo = cpf_extraido.replace(' ', '')
+    expected_digits = re.sub(r'[^\d]', '', expected_partial)
+    cpf_digits = re.sub(r'[^\d]', '', cpf_limpo)
+    
+    # Match exato de substring
+    if expected_partial in cpf_limpo or expected_digits in cpf_digits:
+        return True, 'exato'
+    if len(cpf_digits) >= 3 and cpf_digits in expected_digits:
+        return True, 'exato'
+    
+    # Match fuzzy: OCR troca dígitos (4→A, 8→B, 0→O, 5→S, etc.)
+    # Extrai dígitos do esperado e tenta achar sequência similar no CPF
+    if len(expected_digits) >= 4:
+        # Remove chars não-alfanuméricos e tenta match digit-by-digit com tolerância
+        cpf_clean = re.sub(r'[^a-zA-Z0-9]', '', cpf_extraido.lower())
+        expected_clean = expected_digits
+        
+        # Mapa de chars confundidos pelo OCR
+        ocr_digit_map = {
+            '0': 'oO', '1': 'lI|', '2': 'zZ', '3': '', '4': 'Aa',
+            '5': 'sS', '6': 'bG', '7': '', '8': 'B', '9': 'g',
+        }
+        
+        best_match = 0
+        for start in range(max(1, len(cpf_clean) - len(expected_clean) + 1)):
+            matches = 0
+            for j, exp_digit in enumerate(expected_clean):
+                if start + j >= len(cpf_clean):
+                    break
+                c = cpf_clean[start + j]
+                if c == exp_digit:
+                    matches += 1
+                elif c in ocr_digit_map.get(exp_digit, ''):
+                    matches += 0.7  # OCR confusion match
+            best_match = max(best_match, matches)
+        
+        # Se ≥70% dos dígitos batem (permitindo confusão OCR)
+        ratio = best_match / len(expected_clean) if expected_clean else 0
+        if ratio >= 0.70:
+            return True, 'fuzzy'
+    
+    return False, 'falha'
+
+
 def calculate_trust_score(data: PixData) -> TrustScore:
     """
     Calcula trust score baseado em regras determinísticas.
     
-    Critérios:
-    - Presença de campos obrigatórios (nome, CPF, valor, data, ID)
-    - Formato válido do ID de transação PIX
-    - Formato válido do CPF
-    - Consistência dos dados
-    - Banco identificado
-    - Dados do recebedor batem com os esperados
-    - Data dentro da janela de validade (24h)
+    Penalidades calibradas:
+    - Ausência de campo (falha de OCR): penalidade leve
+    - Mismatch ativo (dado errado): penalidade pesada
     """
     score = 1.0
     detalhes = []
@@ -1539,66 +1613,64 @@ def calculate_trust_score(data: PixData) -> TrustScore:
 
     # ---- CAMPOS OBRIGATÓRIOS ----
 
-    # Valor (peso alto)
+    # Valor
     if data.valor and data.valor > 0:
         detalhes.append(f"✓ Valor encontrado: R$ {data.valor:.2f}")
     else:
-        score -= 0.20
-        penalidades.append("✗ Valor não encontrado ou zero (-0.20)")
+        score -= 0.10
+        penalidades.append("✗ Valor não encontrado ou zero (-0.10)")
 
     # Nome recebedor
     if data.nome_recebedor and len(data.nome_recebedor) > 3:
         detalhes.append(f"✓ Nome recebedor: {data.nome_recebedor}")
-        # Valida se o nome bate com o esperado
         if _nomes_correspondem(data.nome_recebedor, EXPECTED_NOME_RECEBEDOR):
             detalhes.append(f"✓ Nome recebedor confere com o esperado ({EXPECTED_NOME_RECEBEDOR})")
         else:
-            score -= 0.30
-            penalidades.append(f"✗ Nome recebedor '{data.nome_recebedor}' NÃO confere com o esperado '{EXPECTED_NOME_RECEBEDOR}' (-0.30)")
+            score -= 0.35
+            penalidades.append(f"✗ Nome recebedor '{data.nome_recebedor}' NÃO confere com o esperado '{EXPECTED_NOME_RECEBEDOR}' (-0.35)")
     else:
-        score -= 0.15
-        penalidades.append("✗ Nome do recebedor não encontrado (-0.15)")
+        score -= 0.08
+        penalidades.append("✗ Nome do recebedor não encontrado (-0.08)")
 
     # Nome pagador
     if data.nome_pagador and len(data.nome_pagador) > 3:
         detalhes.append(f"✓ Nome pagador: {data.nome_pagador}")
     else:
-        score -= 0.10
-        penalidades.append("✗ Nome do pagador não encontrado (-0.10)")
+        score -= 0.05
+        penalidades.append("✗ Nome do pagador não encontrado (-0.05)")
 
-    # CPF recebedor
+    # CPF recebedor - com matching fuzzy tolerante a OCR
     if data.cpf_recebedor:
         detalhes.append(f"✓ CPF recebedor: {data.cpf_recebedor}")
-        # Verifica formato
         digits = re.findall(r'\d', data.cpf_recebedor)
-        if len(digits) < 6:
-            score -= 0.05
-            penalidades.append("✗ CPF recebedor com formato incomum (-0.05)")
-        # Valida se o CPF contém o trecho esperado
-        # Flexibiliza: OCR troca . por , frequentemente, então normaliza ambos
-        cpf_limpo = data.cpf_recebedor.replace(' ', '')
-        expected_cpf_digits = re.sub(r'[^\d]', '', EXPECTED_CPF_RECEBEDOR_PARTIAL)
-        cpf_only_digits = re.sub(r'[^\d]', '', cpf_limpo)
-        if EXPECTED_CPF_RECEBEDOR_PARTIAL in cpf_limpo or expected_cpf_digits in cpf_only_digits or (len(cpf_only_digits) >= 3 and cpf_only_digits in expected_cpf_digits):
+        if len(digits) < 4:
+            score -= 0.03
+            penalidades.append("✗ CPF recebedor com formato incomum (-0.03)")
+        
+        cpf_match, cpf_nivel = _cpf_fuzzy_match(data.cpf_recebedor, EXPECTED_CPF_RECEBEDOR_PARTIAL)
+        if cpf_match and cpf_nivel == 'exato':
             detalhes.append(f"✓ CPF recebedor contém trecho esperado ({EXPECTED_CPF_RECEBEDOR_PARTIAL})")
+        elif cpf_match and cpf_nivel == 'fuzzy':
+            detalhes.append(f"✓ CPF recebedor confere por similaridade (OCR tolerante)")
+            score -= 0.03
+            penalidades.append("✗ CPF recebedor reconhecido com tolerância OCR (-0.03)")
         else:
-            score -= 0.25
-            penalidades.append(f"✗ CPF recebedor '{data.cpf_recebedor}' NÃO contém trecho esperado '{EXPECTED_CPF_RECEBEDOR_PARTIAL}' (-0.25)")
+            score -= 0.15
+            penalidades.append(f"✗ CPF recebedor '{data.cpf_recebedor}' NÃO contém trecho esperado '{EXPECTED_CPF_RECEBEDOR_PARTIAL}' (-0.15)")
     else:
-        score -= 0.10
-        penalidades.append("✗ CPF do recebedor não encontrado (-0.10)")
+        score -= 0.05
+        penalidades.append("✗ CPF do recebedor não encontrado (-0.05)")
 
     # CPF pagador
     if data.cpf_pagador:
         detalhes.append(f"✓ CPF pagador: {data.cpf_pagador}")
     else:
-        score -= 0.05
-        penalidades.append("✗ CPF do pagador não encontrado (-0.05)")
+        score -= 0.03
+        penalidades.append("✗ CPF do pagador não encontrado (-0.03)")
 
     # Data/hora
     if data.data_hora:
         detalhes.append(f"✓ Data/hora: {data.data_hora}")
-        # Valida se a data está dentro da janela de 24h
         data_valida, motivo = is_data_dentro_validade(data.data_hora)
         if data_valida:
             detalhes.append("✓ Data dentro da janela de validade (últimas 24h)")
@@ -1606,74 +1678,76 @@ def calculate_trust_score(data: PixData) -> TrustScore:
             score -= 0.30
             penalidades.append(f"✗ {motivo} (-0.30)")
     else:
-        score -= 0.10
-        penalidades.append("✗ Data/hora não encontrada (-0.10)")
+        score -= 0.08
+        penalidades.append("✗ Data/hora não encontrada (-0.08)")
 
     # ---- ID DE TRANSAÇÃO PIX ----
 
     if data.id_transacao:
         detalhes.append(f"✓ ID transação: {data.id_transacao[:30]}...")
-        # Valida formato BACEN (começa com E, ~32 chars)
         if re.match(r'^E\d{8}', data.id_transacao):
             detalhes.append("✓ ID segue padrão BACEN (E + ISPB)")
         else:
             score -= 0.05
             penalidades.append("✗ ID de transação não segue padrão BACEN (-0.05)")
+        
+        # Detecção de duplicatas
+        if data.id_transacao in _processed_transaction_ids:
+            score -= 0.30
+            penalidades.append("✗ ID de transação já foi processado anteriormente — possível duplicata (-0.30)")
+            detalhes.append("⚠ ID de transação duplicado detectado")
     else:
-        score -= 0.15
-        penalidades.append("✗ ID de transação PIX não encontrado (-0.15)")
+        score -= 0.10
+        penalidades.append("✗ ID de transação PIX não encontrado (-0.10)")
 
     # ---- BANCO IDENTIFICADO ----
 
     if data.banco_origem and data.banco_origem != 'desconhecido':
         detalhes.append(f"✓ Banco identificado: {data.banco_origem}")
     else:
-        score -= 0.05
-        penalidades.append("✗ Banco emissor não identificado (-0.05)")
+        score -= 0.03
+        penalidades.append("✗ Banco emissor não identificado (-0.03)")
 
     # ---- INSTITUIÇÃO ----
 
     if data.instituicao_recebedor:
         detalhes.append(f"✓ Instituição recebedor: {data.instituicao_recebedor}")
-        # Valida se a instituição bate com a esperada
         if EXPECTED_INSTITUICAO_RECEBEDOR.lower() in data.instituicao_recebedor.lower() or data.instituicao_recebedor.lower() in EXPECTED_INSTITUICAO_RECEBEDOR.lower():
             detalhes.append(f"✓ Instituição recebedor confere com o esperado ({EXPECTED_INSTITUICAO_RECEBEDOR})")
         else:
-            score -= 0.20
-            penalidades.append(f"✗ Instituição recebedor '{data.instituicao_recebedor}' NÃO confere com '{EXPECTED_INSTITUICAO_RECEBEDOR}' (-0.20)")
+            score -= 0.25
+            penalidades.append(f"✗ Instituição recebedor '{data.instituicao_recebedor}' NÃO confere com '{EXPECTED_INSTITUICAO_RECEBEDOR}' (-0.25)")
     else:
-        score -= 0.05
-        penalidades.append("✗ Instituição do recebedor não encontrada (-0.05)")
+        score -= 0.03
+        penalidades.append("✗ Instituição do recebedor não encontrada (-0.03)")
 
-    # ---- CHAVE PIX ----
+    # ---- CHAVE PIX (normalizada) ----
 
     if data.chave_pix:
         detalhes.append(f"✓ Chave PIX: {data.chave_pix}")
-        # Valida se a chave PIX bate com a esperada
-        chave_limpa = re.sub(r'[\s\(\)\-\+]', '', data.chave_pix)
-        expected_limpa = re.sub(r'[\s\(\)\-\+]', '', EXPECTED_CHAVE_PIX)
-        # Chave completa confere
-        if expected_limpa in chave_limpa or chave_limpa in expected_limpa:
+        chave_norm = _normalize_chave_pix(data.chave_pix)
+        expected_norm = _normalize_chave_pix(EXPECTED_CHAVE_PIX)
+        
+        if expected_norm in chave_norm or chave_norm in expected_norm:
             detalhes.append(f"✓ Chave PIX confere com a esperada ({EXPECTED_CHAVE_PIX})")
-        # Chave mascarada — compara últimos 4 dígitos
-        elif len(expected_limpa) >= 4:
+        elif len(expected_norm) >= 4:
+            # Último recurso: últimos 4 dígitos (chave mascarada)
             ultimos4_expected = re.sub(r'[^\d]', '', EXPECTED_CHAVE_PIX)[-4:]
             digits_chave = re.sub(r'[^\d]', '', data.chave_pix)
             if len(digits_chave) >= 4 and digits_chave[-4:] == ultimos4_expected:
                 detalhes.append(f"✓ Chave PIX parcial confere (últimos 4 dígitos: {ultimos4_expected})")
             else:
-                score -= 0.25
-                penalidades.append(f"✗ Chave PIX '{data.chave_pix}' NÃO confere com '{EXPECTED_CHAVE_PIX}' (-0.25)")
+                score -= 0.30
+                penalidades.append(f"✗ Chave PIX '{data.chave_pix}' NÃO confere com '{EXPECTED_CHAVE_PIX}' (-0.30)")
         else:
-            score -= 0.25
-            penalidades.append(f"✗ Chave PIX '{data.chave_pix}' NÃO confere com '{EXPECTED_CHAVE_PIX}' (-0.25)")
+            score -= 0.30
+            penalidades.append(f"✗ Chave PIX '{data.chave_pix}' NÃO confere com '{EXPECTED_CHAVE_PIX}' (-0.30)")
     else:
-        score -= 0.03
-        penalidades.append("✗ Chave PIX não encontrada (-0.03)")
+        score -= 0.02
+        penalidades.append("✗ Chave PIX não encontrada (-0.02)")
 
     # ---- VALIDAÇÕES DE CONSISTÊNCIA ----
 
-    # Verifica se o tipo é realmente PIX
     if data.tipo and data.tipo == 'pix':
         detalhes.append("✓ Tipo de transação: PIX")
     else:
@@ -1683,8 +1757,8 @@ def calculate_trust_score(data: PixData) -> TrustScore:
     if data.raw_text:
         text_lower = data.raw_text.lower()
         if 'pix' not in text_lower and 'transferência' not in text_lower and 'transferencia' not in text_lower and 'pagamento' not in text_lower:
-            score -= 0.10
-            penalidades.append("✗ Texto não menciona 'PIX', 'transferência' ou 'pagamento' (-0.10)")
+            score -= 0.05
+            penalidades.append("✗ Texto não menciona 'PIX', 'transferência' ou 'pagamento' (-0.05)")
 
     # ---- DETECÇÃO DE AGENDAMENTO ----
     is_agendado = False
@@ -1718,10 +1792,7 @@ def calculate_trust_score(data: PixData) -> TrustScore:
 
     cpf_ok = False
     if data.cpf_recebedor:
-        expected_cpf_digits = re.sub(r'[^\d]', '', EXPECTED_CPF_RECEBEDOR_PARTIAL)
-        cpf_only_digits = re.sub(r'[^\d]', '', data.cpf_recebedor)
-        if EXPECTED_CPF_RECEBEDOR_PARTIAL in data.cpf_recebedor.replace(' ', '') or expected_cpf_digits in cpf_only_digits or (len(cpf_only_digits) >= 3 and cpf_only_digits in expected_cpf_digits):
-            cpf_ok = True
+        cpf_ok, _ = _cpf_fuzzy_match(data.cpf_recebedor, EXPECTED_CPF_RECEBEDOR_PARTIAL)
 
     dados_basicos_ok = recebedor_ok and data.data_hora and data.id_transacao
 
@@ -1784,27 +1855,27 @@ def _validate_with_qwen(image_bytes: bytes, data: PixData, trust: TrustScore) ->
         logger.info(f"[Qwen] Pulando validação — score {trust.score} < {OLLAMA_MIN_SCORE}")
         return None
 
+    banco_info = data.banco_origem if data.banco_origem and data.banco_origem != 'desconhecido' else 'não identificado'
     prompt = (
-        "Você é um especialista em validação de comprovantes bancários PIX brasileiros. "
-        "Analise a imagem do comprovante e os dados extraídos por OCR abaixo.\n\n"
-        f"Dados extraídos pelo OCR:\n"
-        f"- Banco: {data.banco_origem or 'não identificado'}\n"
-        f"- Nome recebedor: {data.nome_recebedor or 'não encontrado'}\n"
-        f"- CPF recebedor: {data.cpf_recebedor or 'não encontrado'}\n"
-        f"- Nome pagador: {data.nome_pagador or 'não encontrado'}\n"
-        f"- Valor: {data.valor_raw or 'não encontrado'}\n"
-        f"- Data/hora: {data.data_hora or 'não encontrada'}\n"
-        f"- ID transação: {data.id_transacao or 'não encontrado'}\n"
-        f"- Chave PIX: {data.chave_pix or 'não encontrada'}\n"
-        f"- Trust score OCR: {trust.score}\n\n"
-        "Analise criteriosamente:\n"
-        "1. O layout visual é consistente com um comprovante real do banco indicado?\n"
-        "2. As fontes, cores e alinhamento parecem autênticos ou editados?\n"
-        "3. Os dados na imagem correspondem aos dados extraídos pelo OCR?\n"
-        "4. Há sinais de edição digital (Photoshop, recorte, colagem)?\n"
-        "5. É realmente um comprovante de transferência PIX?\n\n"
-        "Responda APENAS com JSON válido, sem markdown, sem explicação fora do JSON:\n"
-        '{"valido": true ou false, "confianca": 0.0 a 1.0, "motivo": "explicação curta"}'
+        "Você é um perito forense em documentos digitais bancários brasileiros. "
+        "Analise a imagem e determine se é um comprovante PIX autêntico ou forjado.\n\n"
+        f"Banco identificado pelo OCR: {banco_info}\n"
+        f"Dados extraídos:\n"
+        f"- Recebedor: {data.nome_recebedor or '?'} | CPF: {data.cpf_recebedor or '?'}\n"
+        f"- Pagador: {data.nome_pagador or '?'}\n"
+        f"- Valor: {data.valor_raw or '?'} | Data: {data.data_hora or '?'}\n"
+        f"- ID: {data.id_transacao or '?'} | Chave: {data.chave_pix or '?'}\n"
+        f"- Score OCR: {trust.score}\n\n"
+        "Verifique:\n"
+        f"1. O layout/cores/logo correspondem ao banco {banco_info}?\n"
+        "2. Fontes são consistentes ou há mistura de tipografias (indicando edição)?\n"
+        "3. Há texto sobreposto, bordas de recorte, ou artefatos de edição?\n"
+        "4. É screenshot de outro app (barra de status visível, bordas de WhatsApp)?\n"
+        "5. Os dados na imagem batem com os dados do OCR acima?\n"
+        "6. É realmente um comprovante de transferência PIX (não boleto, extrato, etc)?\n\n"
+        "Responda SOMENTE com JSON, sem markdown:\n"
+        '{"valido": true/false, "confianca": 0.0-1.0, "motivo": "explicação curta", '
+        '"screenshot_de_screenshot": true/false}'
     )
 
     img_b64 = base64.b64encode(image_bytes).decode('utf-8')
@@ -1861,9 +1932,63 @@ def _validate_with_qwen(image_bytes: bytes, data: PixData, trust: TrustScore) ->
         return QwenValidation(erro=str(e), tempo_segundos=round(elapsed, 1))
 
 
+def _apply_qwen_to_trust(trust: TrustScore, qwen: Optional[QwenValidation]) -> TrustScore:
+    """
+    Integra resultado do Qwen no trust score.
+    - Qwen valido=false com alta confiança → penaliza
+    - Qwen valido=true com alta confiança → bônus de resgate
+    """
+    if not qwen or qwen.valido is None or qwen.erro:
+        return trust
+
+    score = trust.score
+    detalhes = list(trust.detalhes)
+    penalidades = list(trust.penalidades)
+    nivel = trust.nivel
+
+    confianca = qwen.confianca or 0.0
+
+    if qwen.valido is False:
+        if confianca >= 0.9:
+            score -= 0.45
+            penalidades.append(f"✗ Qwen detectou fraude com alta confiança ({confianca:.0%}): {qwen.motivo} (-0.45)")
+            if score < 0.30 and nivel not in ('naoecomprovante', 'pixagendado'):
+                nivel = "pixfraudado"
+        elif confianca >= 0.7:
+            score -= 0.30
+            penalidades.append(f"✗ Qwen detectou fraude ({confianca:.0%}): {qwen.motivo} (-0.30)")
+        elif confianca >= 0.5:
+            score -= 0.15
+            penalidades.append(f"✗ Qwen suspeita de fraude ({confianca:.0%}): {qwen.motivo} (-0.15)")
+    elif qwen.valido is True:
+        if confianca >= 0.8:
+            bonus = min(0.10, 1.0 - score)
+            if bonus > 0:
+                score += bonus
+                detalhes.append(f"✓ Qwen confirmou comprovante autêntico ({confianca:.0%}) — bônus +{bonus:.2f}")
+        elif confianca >= 0.6:
+            bonus = min(0.05, 1.0 - score)
+            if bonus > 0:
+                score += bonus
+                detalhes.append(f"✓ Qwen validou visualmente ({confianca:.0%}) — bônus +{bonus:.2f}")
+
+    score = max(0.0, min(1.0, score))
+
+    # Reclassifica se Qwen detectou fraude em comprovante que parecia OK
+    if qwen.valido is False and confianca >= 0.7 and trust.score >= 0.45:
+        nivel = "pixfraudado"
+
+    return TrustScore(
+        score=round(score, 2),
+        nivel=nivel,
+        detalhes=detalhes,
+        penalidades=penalidades,
+    )
+
+
 def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> ExtractionResult:
     """
-    Fluxo unificado: OCR → Parse → Trust Score → Validação Visual (Qwen).
+    Fluxo unificado: OCR → Parse → Trust Score → Validação Visual (Qwen) → Score final.
     Usado por todos os endpoints /extract.
     """
     start = time.time()
@@ -1872,7 +1997,6 @@ def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> Ex
     text = extract_text(file_bytes, filename)
     if not text or len(text.strip()) < 10:
         logger.warning(f"[{endpoint}] Texto insuficiente extraído de {filename} — não é comprovante")
-        elapsed = time.time() - start
         return ExtractionResult(
             success=True,
             dados=PixData(),
@@ -1887,13 +2011,12 @@ def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> Ex
     data = parse_receipt(text)
     trust = calculate_trust_score(data)
 
-    # Validação visual com Qwen (apenas para imagens, não PDFs com texto nativo)
+    # Validação visual com Qwen
     qwen_result = None
     ext = Path(filename).suffix.lower()
     if ext != ".pdf":
         qwen_result = _validate_with_qwen(file_bytes, data, trust)
     else:
-        # Para PDFs, tenta renderizar primeira página como imagem para o Qwen
         try:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             if len(doc) > 0:
@@ -1903,6 +2026,18 @@ def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> Ex
             doc.close()
         except Exception as e:
             logger.warning(f"[{endpoint}] Não foi possível renderizar PDF para Qwen: {e}")
+
+    # Integrar resultado do Qwen no trust score
+    trust = _apply_qwen_to_trust(trust, qwen_result)
+
+    # Registrar ID de transação para detecção de duplicatas futuras
+    if data.id_transacao:
+        _processed_transaction_ids[data.id_transacao] = time.time()
+        # Limpa IDs antigos (>30 dias) para não vazar memória
+        cutoff = time.time() - (_DUPLICATE_TTL_HOURS * 3600)
+        expired = [k for k, v in _processed_transaction_ids.items() if v < cutoff]
+        for k in expired:
+            del _processed_transaction_ids[k]
 
     elapsed = time.time() - start
     logger.info(
