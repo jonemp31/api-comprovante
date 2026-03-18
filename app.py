@@ -105,10 +105,9 @@ class PixData(BaseModel):
 
 
 class TrustScore(BaseModel):
-    score: float  # 0.0 - 1.0
-    nivel: str  # "alto", "medio", "baixo", "suspeito"
+    score: int  # 0 - 100
+    estado: str  # "APROVADO", "SUSPEITO", "REJEITADO"
     detalhes: list[str]
-    penalidades: list[str]
 
 
 class ExtractionResult(BaseModel):
@@ -127,6 +126,7 @@ class ExtractionResult(BaseModel):
     tipo: Optional[str] = None
     rawtext: Optional[str] = None
     detalhes: str = "comprovantenaodetectado"
+    veredito: str = "rejeitado"
 
 
 class Base64Input(BaseModel):
@@ -1595,242 +1595,134 @@ def _cpf_fuzzy_match(cpf_extraido: str, expected_partial: str) -> tuple[bool, st
 
 def calculate_trust_score(data: PixData) -> TrustScore:
     """
-    Calcula trust score baseado em regras determinísticas.
-    
-    Penalidades calibradas:
-    - Ausência de campo (falha de OCR): penalidade leve
-    - Mismatch ativo (dado errado): penalidade pesada
+    Sistema de pesos com 4 campos (total = 100):
+      CPF parcial:    50 pts
+      Nome:           20 pts
+      Instituição:    15 pts
+      Chave PIX:      15 pts
+
+    Thresholds:
+      >= 80  → APROVADO
+      >= 50  → SUSPEITO
+      <  50  → REJEITADO
+
+    Data (modificador — nunca promove, só rebaixa):
+      - Encontrada e dentro de 60 min → não altera
+      - Encontrada e fora de 60 min   → força REJEITADO
+      - Não encontrada + APROVADO     → rebaixa para SUSPEITO
     """
-    score = 1.0
+    score = 0
     detalhes = []
-    penalidades = []
 
-    # ---- CAMPOS OBRIGATÓRIOS ----
-
-    # Valor
-    if data.valor and data.valor > 0:
-        detalhes.append(f"✓ Valor encontrado: R$ {data.valor:.2f}")
-    else:
-        score -= 0.10
-        penalidades.append("✗ Valor não encontrado ou zero (-0.10)")
-
-    # Nome recebedor
-    if data.nome_recebedor and len(data.nome_recebedor) > 3:
-        detalhes.append(f"✓ Nome recebedor: {data.nome_recebedor}")
-        if _nomes_correspondem(data.nome_recebedor, EXPECTED_NOME_RECEBEDOR):
-            detalhes.append(f"✓ Nome recebedor confere com o esperado ({EXPECTED_NOME_RECEBEDOR})")
-        else:
-            score -= 0.35
-            penalidades.append(f"✗ Nome recebedor '{data.nome_recebedor}' NÃO confere com o esperado '{EXPECTED_NOME_RECEBEDOR}' (-0.35)")
-    else:
-        score -= 0.08
-        penalidades.append("✗ Nome do recebedor não encontrado (-0.08)")
-
-    # Nome pagador
-    if data.nome_pagador and len(data.nome_pagador) > 3:
-        detalhes.append(f"✓ Nome pagador: {data.nome_pagador}")
-    else:
-        score -= 0.05
-        penalidades.append("✗ Nome do pagador não encontrado (-0.05)")
-
-    # CPF recebedor - com matching fuzzy tolerante a OCR
+    # ---- 1. CPF recebedor (peso 50) ----
+    cpf_ok = False
     if data.cpf_recebedor:
-        detalhes.append(f"✓ CPF recebedor: {data.cpf_recebedor}")
-        digits = re.findall(r'\d', data.cpf_recebedor)
-        if len(digits) < 4:
-            score -= 0.03
-            penalidades.append("✗ CPF recebedor com formato incomum (-0.03)")
-        
         cpf_match, cpf_nivel = _cpf_fuzzy_match(data.cpf_recebedor, EXPECTED_CPF_RECEBEDOR_PARTIAL)
-        if cpf_match and cpf_nivel == 'exato':
-            detalhes.append(f"✓ CPF recebedor contém trecho esperado ({EXPECTED_CPF_RECEBEDOR_PARTIAL})")
-        elif cpf_match and cpf_nivel == 'fuzzy':
-            detalhes.append(f"✓ CPF recebedor confere por similaridade (OCR tolerante)")
-            score -= 0.03
-            penalidades.append("✗ CPF recebedor reconhecido com tolerância OCR (-0.03)")
+        if cpf_match:
+            score += 50
+            cpf_ok = True
+            detalhes.append(f"CPF recebedor confere ({cpf_nivel}): {data.cpf_recebedor} (+50)")
         else:
-            score -= 0.15
-            penalidades.append(f"✗ CPF recebedor '{data.cpf_recebedor}' NÃO contém trecho esperado '{EXPECTED_CPF_RECEBEDOR_PARTIAL}' (-0.15)")
+            detalhes.append(f"CPF recebedor '{data.cpf_recebedor}' não confere com '{EXPECTED_CPF_RECEBEDOR_PARTIAL}'")
     else:
-        score -= 0.05
-        penalidades.append("✗ CPF do recebedor não encontrado (-0.05)")
+        detalhes.append("CPF recebedor não encontrado")
 
-    # CPF pagador
-    if data.cpf_pagador:
-        detalhes.append(f"✓ CPF pagador: {data.cpf_pagador}")
-    else:
-        score -= 0.03
-        penalidades.append("✗ CPF do pagador não encontrado (-0.03)")
-
-    # Data/hora
-    if data.data_hora:
-        detalhes.append(f"✓ Data/hora: {data.data_hora}")
-        data_valida, motivo = is_data_dentro_validade(data.data_hora)
-        if data_valida:
-            detalhes.append("✓ Data dentro da janela de validade (últimas 24h)")
+    # ---- 2. Nome recebedor (peso 20) ----
+    nome_ok = False
+    if data.nome_recebedor and len(data.nome_recebedor) > 3:
+        if _nomes_correspondem(data.nome_recebedor, EXPECTED_NOME_RECEBEDOR):
+            score += 20
+            nome_ok = True
+            detalhes.append(f"Nome recebedor confere: {data.nome_recebedor} (+20)")
         else:
-            score -= 0.30
-            penalidades.append(f"✗ {motivo} (-0.30)")
+            detalhes.append(f"Nome recebedor '{data.nome_recebedor}' não confere com '{EXPECTED_NOME_RECEBEDOR}'")
     else:
-        score -= 0.08
-        penalidades.append("✗ Data/hora não encontrada (-0.08)")
+        detalhes.append("Nome recebedor não encontrado")
 
-    # ---- ID DE TRANSAÇÃO PIX ----
-
-    if data.id_transacao:
-        detalhes.append(f"✓ ID transação: {data.id_transacao[:30]}...")
-        if re.match(r'^E\d{8}', data.id_transacao):
-            detalhes.append("✓ ID segue padrão BACEN (E + ISPB)")
-        else:
-            score -= 0.05
-            penalidades.append("✗ ID de transação não segue padrão BACEN (-0.05)")
-        
-        # Detecção de duplicatas
-        if data.id_transacao in _processed_transaction_ids:
-            score -= 0.30
-            penalidades.append("✗ ID de transação já foi processado anteriormente — possível duplicata (-0.30)")
-            detalhes.append("⚠ ID de transação duplicado detectado")
-    else:
-        score -= 0.10
-        penalidades.append("✗ ID de transação PIX não encontrado (-0.10)")
-
-    # ---- BANCO IDENTIFICADO ----
-
-    if data.banco_origem and data.banco_origem != 'desconhecido':
-        detalhes.append(f"✓ Banco identificado: {data.banco_origem}")
-    else:
-        score -= 0.03
-        penalidades.append("✗ Banco emissor não identificado (-0.03)")
-
-    # ---- INSTITUIÇÃO ----
-
+    # ---- 3. Instituição recebedor (peso 15) ----
+    inst_ok = False
     if data.instituicao_recebedor:
-        detalhes.append(f"✓ Instituição recebedor: {data.instituicao_recebedor}")
-        if EXPECTED_INSTITUICAO_RECEBEDOR.lower() in data.instituicao_recebedor.lower() or data.instituicao_recebedor.lower() in EXPECTED_INSTITUICAO_RECEBEDOR.lower():
-            detalhes.append(f"✓ Instituição recebedor confere com o esperado ({EXPECTED_INSTITUICAO_RECEBEDOR})")
+        inst_lower = data.instituicao_recebedor.lower()
+        expected_lower = EXPECTED_INSTITUICAO_RECEBEDOR.lower()
+        if expected_lower in inst_lower or inst_lower in expected_lower:
+            score += 15
+            inst_ok = True
+            detalhes.append(f"Instituição confere: {data.instituicao_recebedor} (+15)")
         else:
-            score -= 0.25
-            penalidades.append(f"✗ Instituição recebedor '{data.instituicao_recebedor}' NÃO confere com '{EXPECTED_INSTITUICAO_RECEBEDOR}' (-0.25)")
+            detalhes.append(f"Instituição '{data.instituicao_recebedor}' não confere com '{EXPECTED_INSTITUICAO_RECEBEDOR}'")
     else:
-        score -= 0.03
-        penalidades.append("✗ Instituição do recebedor não encontrada (-0.03)")
+        detalhes.append("Instituição recebedor não encontrada")
 
-    # ---- CHAVE PIX (normalizada) ----
-
+    # ---- 4. Chave PIX (peso 15) ----
+    chave_ok = False
     if data.chave_pix:
-        detalhes.append(f"✓ Chave PIX: {data.chave_pix}")
         chave_norm = _normalize_chave_pix(data.chave_pix)
         expected_norm = _normalize_chave_pix(EXPECTED_CHAVE_PIX)
-        
         if expected_norm in chave_norm or chave_norm in expected_norm:
-            detalhes.append(f"✓ Chave PIX confere com a esperada ({EXPECTED_CHAVE_PIX})")
+            score += 15
+            chave_ok = True
+            detalhes.append(f"Chave PIX confere: {data.chave_pix} (+15)")
         elif len(expected_norm) >= 4:
-            # Último recurso: últimos 4 dígitos (chave mascarada)
-            ultimos4_expected = re.sub(r'[^\d]', '', EXPECTED_CHAVE_PIX)[-4:]
+            ultimos4 = re.sub(r'[^\d]', '', EXPECTED_CHAVE_PIX)[-4:]
             digits_chave = re.sub(r'[^\d]', '', data.chave_pix)
-            if len(digits_chave) >= 4 and digits_chave[-4:] == ultimos4_expected:
-                detalhes.append(f"✓ Chave PIX parcial confere (últimos 4 dígitos: {ultimos4_expected})")
+            if len(digits_chave) >= 4 and digits_chave[-4:] == ultimos4:
+                score += 15
+                chave_ok = True
+                detalhes.append(f"Chave PIX parcial confere (últimos 4: {ultimos4}) (+15)")
             else:
-                score -= 0.30
-                penalidades.append(f"✗ Chave PIX '{data.chave_pix}' NÃO confere com '{EXPECTED_CHAVE_PIX}' (-0.30)")
+                detalhes.append(f"Chave PIX '{data.chave_pix}' não confere com '{EXPECTED_CHAVE_PIX}'")
         else:
-            score -= 0.30
-            penalidades.append(f"✗ Chave PIX '{data.chave_pix}' NÃO confere com '{EXPECTED_CHAVE_PIX}' (-0.30)")
+            detalhes.append(f"Chave PIX '{data.chave_pix}' não confere com '{EXPECTED_CHAVE_PIX}'")
     else:
-        score -= 0.02
-        penalidades.append("✗ Chave PIX não encontrada (-0.02)")
+        detalhes.append("Chave PIX não encontrada")
 
-    # ---- VALIDAÇÕES DE CONSISTÊNCIA ----
-
-    if data.tipo and data.tipo == 'pix':
-        detalhes.append("✓ Tipo de transação: PIX")
+    # ---- Estado base pelo score ----
+    if score >= 80:
+        estado = "aprovado"
+    elif score >= 50:
+        estado = "suspeito"
     else:
-        score -= 0.10
-        penalidades.append(f"✗ Tipo de transação '{data.tipo}' não é PIX (-0.10)")
+        estado = "rejeitado"
 
-    if data.raw_text:
-        text_lower = data.raw_text.lower()
-        if 'pix' not in text_lower and 'transferência' not in text_lower and 'transferencia' not in text_lower and 'pagamento' not in text_lower:
-            score -= 0.05
-            penalidades.append("✗ Texto não menciona 'PIX', 'transferência' ou 'pagamento' (-0.05)")
+    detalhes.append(f"Score: {score}/100 → {estado.upper()}")
 
-    # ---- DETECÇÃO DE AGENDAMENTO ----
-    is_agendado = False
-    if data.raw_text:
-        text_lower = data.raw_text.lower()
-        palavras_agendamento = ['programado', 'agendado', 'agendamento', 'programada', 'agendada']
-        for palavra in palavras_agendamento:
-            if palavra in text_lower:
-                is_agendado = True
-                score -= 0.50
-                penalidades.append(f"✗ Comprovante contém '{palavra}' — pagamento apenas agendado, não realizado (-0.50)")
-                break
-
-    # Clamp
-    score = max(0.0, min(1.0, score))
-
-    # ---- CLASSIFICAÇÃO POR NÍVEL DE NEGÓCIO ----
-    # Determina horas desde o comprovante
-    horas_diferenca = None
+    # ---- Modificador de data (só rebaixa/rejeita, nunca promove) ----
     if data.data_hora:
         dt = parse_data_hora(data.data_hora)
         if dt:
-            horas_diferenca = (datetime.now(BRT) - dt).total_seconds() / 3600
-
-    # Verifica se os dados do recebedor conferem
-    recebedor_ok = True
-    if not data.nome_recebedor or len(data.nome_recebedor) <= 3:
-        recebedor_ok = False
-    elif not _nomes_correspondem(data.nome_recebedor, EXPECTED_NOME_RECEBEDOR):
-        recebedor_ok = False
-
-    cpf_ok = False
-    if data.cpf_recebedor:
-        cpf_ok, _ = _cpf_fuzzy_match(data.cpf_recebedor, EXPECTED_CPF_RECEBEDOR_PARTIAL)
-
-    dados_basicos_ok = recebedor_ok and data.data_hora and data.id_transacao
-
-    # Verifica se destino confere (nome OU cpf do recebedor bate)
-    destino_ok = recebedor_ok or cpf_ok
-
-    if is_agendado:
-        nivel = "pixagendado"
-    elif score < 0.30:
-        nivel = "pixinvalido"
-    elif not dados_basicos_ok or score < 0.45:
-        nivel = "pixsuspeito"
-    elif not destino_ok:
-        nivel = "pixdestinoerrado"
-    elif not data.valor or data.valor <= 0:
-        nivel = "pixsuspeito"
-    elif horas_diferenca is not None and horas_diferenca > MAX_HORAS_VALIDADE:
-        # Real, acima de 24h (valor não importa)
-        nivel = "pixvalidomais24horas"
-    elif horas_diferenca is not None and horas_diferenca <= MAX_HORAS_VALIDADE and horas_diferenca > 1:
-        # Real, entre 1h e 24h
-        if data.valor < 10:
-            nivel = "pix24horaspobre"
-        elif data.valor > 20:
-            nivel = "pix24horaspresente"
+            minutos = (datetime.now(BRT) - dt).total_seconds() / 60
+            if minutos < -5:  # tolerância de 5 min para fuso/relógio
+                estado = "rejeitado"
+                detalhes.append(f"Data no futuro ({data.data_hora}) → REJEITADO")
+            elif minutos > 60:
+                estado = "rejeitado"
+                detalhes.append(f"Data fora da janela de 60 min ({minutos:.0f} min atrás) → REJEITADO")
+            else:
+                detalhes.append(f"Data dentro de 60 min ({minutos:.0f} min atrás) — OK")
         else:
-            nivel = "pix24horas"
-    elif horas_diferenca is not None and horas_diferenca <= 1:
-        # Real, menos de 1h
-        if data.valor < 10:
-            nivel = "pixpobre"
-        elif data.valor > 20:
-            nivel = "pixvalidopresente"
-        else:
-            nivel = "pixvalido"
+            if estado == "aprovado":
+                estado = "suspeito"
+                detalhes.append("Data não interpretável → rebaixado para SUSPEITO")
     else:
-        nivel = "pixsuspeito"
+        if estado == "aprovado":
+            estado = "suspeito"
+            detalhes.append("Data não encontrada → rebaixado para SUSPEITO")
 
-    return TrustScore(
-        score=round(score, 2),
-        nivel=nivel,
-        detalhes=detalhes,
-        penalidades=penalidades,
-    )
+    # ---- Detecção de duplicatas ----
+    if data.id_transacao and data.id_transacao in _processed_transaction_ids:
+        estado = "rejeitado"
+        detalhes.append("ID de transação duplicado → REJEITADO")
+
+    # ---- Detecção de agendamento ----
+    if data.raw_text:
+        text_lower = data.raw_text.lower()
+        for palavra in ('programado', 'agendado', 'agendamento', 'programada', 'agendada'):
+            if palavra in text_lower:
+                estado = "rejeitado"
+                detalhes.append(f"Comprovante agendado ('{palavra}') → REJEITADO")
+                break
+
+    return TrustScore(score=score, estado=estado, detalhes=detalhes)
 
 
 def _build_result(data: PixData, trust: TrustScore) -> ExtractionResult:
@@ -1850,7 +1742,8 @@ def _build_result(data: PixData, trust: TrustScore) -> ExtractionResult:
         idtransacao=data.id_transacao,
         tipo=data.tipo,
         rawtext=data.raw_text,
-        detalhes=trust.nivel,
+        detalhes='; '.join(trust.detalhes),
+        veredito=trust.estado,
     )
 
 
@@ -1881,12 +1774,12 @@ def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> Ex
 
     elapsed = time.time() - start
     logger.info(
-        f"[{endpoint}] {filename} | banco={data.banco_origem} | score={trust.score} | nivel={trust.nivel}"
-        f" | valor={data.valor} | recebedor={data.nome_recebedor} | pagador={data.nome_pagador}"
+        f"[{endpoint}] {filename} | banco={data.banco_origem} | score={trust.score}"
+        f" | veredito={trust.estado} | valor={data.valor}"
+        f" | recebedor={data.nome_recebedor} | pagador={data.nome_pagador}"
         f" | {elapsed:.2f}s"
     )
-    if trust.penalidades:
-        logger.info(f"[{endpoint}] Penalidades: {'; '.join(trust.penalidades)}")
+    logger.info(f"[{endpoint}] Detalhes: {'; '.join(trust.detalhes)}")
 
     return _build_result(data, trust)
 
