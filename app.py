@@ -16,8 +16,11 @@ Uso:
 
 import re
 import io
+import os
 import base64
 import hashlib
+import logging
+import time
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
@@ -25,9 +28,20 @@ from pathlib import Path
 import pytesseract
 from PIL import Image, ImageOps
 import fitz  # pymupdf
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("pix-api")
 
 app = FastAPI(
     title="PIX Receipt Extractor API",
@@ -36,14 +50,21 @@ app = FastAPI(
 )
 
 # ============================================================
-# DADOS ESPERADOS DO RECEBEDOR
+# DADOS ESPERADOS DO RECEBEDOR (via variáveis de ambiente)
 # ============================================================
 
-EXPECTED_NOME_RECEBEDOR = "Maria Eduarda Cavaton"
-EXPECTED_CPF_RECEBEDOR_PARTIAL = "824.458"  # Trecho do CPF (mascarado)
-EXPECTED_INSTITUICAO_RECEBEDOR = "Banco Inter"
-EXPECTED_CHAVE_PIX = "16991500219"
-MAX_HORAS_VALIDADE = 24  # Comprovante válido por até 24 horas
+EXPECTED_NOME_RECEBEDOR = os.getenv("EXPECTED_NOME_RECEBEDOR", "Maria Eduarda Cavaton")
+EXPECTED_CPF_RECEBEDOR_PARTIAL = os.getenv("EXPECTED_CPF_RECEBEDOR_PARTIAL", "824.458")
+EXPECTED_INSTITUICAO_RECEBEDOR = os.getenv("EXPECTED_INSTITUICAO_RECEBEDOR", "Banco Inter")
+EXPECTED_CHAVE_PIX = os.getenv("EXPECTED_CHAVE_PIX", "16991500219")
+MAX_HORAS_VALIDADE = int(os.getenv("MAX_HORAS_VALIDADE", "24"))
+
+logger.info("=== Configuração carregada ===")
+logger.info(f"  EXPECTED_NOME_RECEBEDOR = {EXPECTED_NOME_RECEBEDOR}")
+logger.info(f"  EXPECTED_CPF_RECEBEDOR_PARTIAL = {EXPECTED_CPF_RECEBEDOR_PARTIAL}")
+logger.info(f"  EXPECTED_INSTITUICAO_RECEBEDOR = {EXPECTED_INSTITUICAO_RECEBEDOR}")
+logger.info(f"  EXPECTED_CHAVE_PIX = {EXPECTED_CHAVE_PIX}")
+logger.info(f"  MAX_HORAS_VALIDADE = {MAX_HORAS_VALIDADE}h")
 
 app.add_middleware(
     CORSMiddleware,
@@ -1406,12 +1427,16 @@ def calculate_trust_score(data: PixData) -> TrustScore:
 @app.post("/extract", response_model=ExtractionResult)
 async def extract_from_upload(file: UploadFile = File(...)):
     """Extrai dados de comprovante PIX enviado como upload."""
+    start = time.time()
+    filename = file.filename or "comprovante.jpg"
+    logger.info(f"[/extract] Recebido: {filename}")
     try:
         file_bytes = await file.read()
-        filename = file.filename or "comprovante.jpg"
+        logger.info(f"[/extract] Tamanho: {len(file_bytes)} bytes")
 
         text = extract_text(file_bytes, filename)
         if not text or len(text.strip()) < 10:
+            logger.warning(f"[/extract] Texto insuficiente extraído de {filename}")
             return ExtractionResult(
                 success=False,
                 error="Não foi possível extrair texto do arquivo. Verifique a qualidade da imagem.",
@@ -1419,25 +1444,36 @@ async def extract_from_upload(file: UploadFile = File(...)):
 
         data = parse_receipt(text)
         trust = calculate_trust_score(data)
+        elapsed = time.time() - start
 
-        # Remove raw_text do retorno para limpar resposta (opcional)
-        # data.raw_text = None
+        logger.info(
+            f"[/extract] {filename} | banco={data.banco_origem} | score={trust.score} | nivel={trust.nivel}"
+            f" | valor={data.valor} | recebedor={data.nome_recebedor} | pagador={data.nome_pagador}"
+            f" | {elapsed:.2f}s"
+        )
+        if trust.penalidades:
+            logger.info(f"[/extract] Penalidades: {'; '.join(trust.penalidades)}")
 
         return ExtractionResult(success=True, dados=data, trust=trust)
 
     except Exception as e:
+        logger.error(f"[/extract] Erro ao processar {filename}: {e}")
         return ExtractionResult(success=False, error=str(e))
 
 
 @app.post("/extract/base64", response_model=ExtractionResult)
 async def extract_from_base64(input_data: Base64Input):
     """Extrai dados de comprovante PIX enviado como base64."""
+    start = time.time()
+    filename = input_data.filename
+    logger.info(f"[/extract/base64] Recebido: {filename}")
     try:
         file_bytes = base64.b64decode(input_data.file)
-        filename = input_data.filename
+        logger.info(f"[/extract/base64] Tamanho: {len(file_bytes)} bytes")
 
         text = extract_text(file_bytes, filename)
         if not text or len(text.strip()) < 10:
+            logger.warning(f"[/extract/base64] Texto insuficiente de {filename}")
             return ExtractionResult(
                 success=False,
                 error="Não foi possível extrair texto do arquivo.",
@@ -1445,28 +1481,42 @@ async def extract_from_base64(input_data: Base64Input):
 
         data = parse_receipt(text)
         trust = calculate_trust_score(data)
+        elapsed = time.time() - start
+
+        logger.info(
+            f"[/extract/base64] {filename} | banco={data.banco_origem} | score={trust.score} | nivel={trust.nivel}"
+            f" | valor={data.valor} | recebedor={data.nome_recebedor} | pagador={data.nome_pagador}"
+            f" | {elapsed:.2f}s"
+        )
+        if trust.penalidades:
+            logger.info(f"[/extract/base64] Penalidades: {'; '.join(trust.penalidades)}")
 
         return ExtractionResult(success=True, dados=data, trust=trust)
 
     except Exception as e:
+        logger.error(f"[/extract/base64] Erro ao processar {filename}: {e}")
         return ExtractionResult(success=False, error=str(e))
 
 
 @app.post("/ocr", response_model=dict)
 async def raw_ocr(file: UploadFile = File(...)):
     """Retorna apenas o texto OCR bruto (debug/desenvolvimento)."""
+    filename = file.filename or "file.jpg"
+    logger.info(f"[/ocr] Recebido: {filename}")
     try:
         file_bytes = await file.read()
-        filename = file.filename or "file.jpg"
         text = extract_text(file_bytes, filename)
         bank = classify_bank(text)
+        logger.info(f"[/ocr] {filename} | banco={bank} | chars={len(text)}")
         return {"text": text, "banco_detectado": bank, "chars": len(text)}
     except Exception as e:
+        logger.error(f"[/ocr] Erro ao processar {filename}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")
 async def health():
+    logger.debug("[/health] Health check")
     return {"status": "ok", "version": "1.0.0"}
 
 

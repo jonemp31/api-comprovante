@@ -3,9 +3,15 @@ version: "3.8"
 services:
   pix-extractor:
     build: .
-    image: pix-receipt-api:latest
+    image: jondevsouza31/api-comprovante:latest
     ports:
       - "8000:8000"
+    environment:
+      - EXPECTED_NOME_RECEBEDOR=Maria Eduarda Cavaton
+      - EXPECTED_CPF_RECEBEDOR_PARTIAL=824.458
+      - EXPECTED_INSTITUICAO_RECEBEDOR=Banco Inter
+      - EXPECTED_CHAVE_PIX=16991500219
+      - MAX_HORAS_VALIDADE=24
     deploy:
       replicas: 1
       resources:
