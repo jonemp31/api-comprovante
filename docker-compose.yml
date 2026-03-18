@@ -2,10 +2,9 @@ version: "3.8"
 
 services:
   pix-extractor:
-    build: .
     image: jondevsouza31/api-comprovante:latest
     ports:
-      - "8000:8000"
+      - "8080:8000"
     environment:
       - EXPECTED_NOME_RECEBEDOR=Maria Eduarda Cavaton
       - EXPECTED_CPF_RECEBEDOR_PARTIAL=824.458
