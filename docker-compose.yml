@@ -15,9 +15,9 @@ services:
       replicas: 1
       resources:
         limits:
-          memory: 4096M
+          memory: 512M
         reservations:
-          memory: 2048M
+          memory: 256M
       restart_policy:
         condition: on-failure
         delay: 5s
