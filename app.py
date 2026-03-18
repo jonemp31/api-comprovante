@@ -59,6 +59,13 @@ EXPECTED_INSTITUICAO_RECEBEDOR = os.getenv("EXPECTED_INSTITUICAO_RECEBEDOR", "Ba
 EXPECTED_CHAVE_PIX = os.getenv("EXPECTED_CHAVE_PIX", "16991500219")
 MAX_HORAS_VALIDADE = int(os.getenv("MAX_HORAS_VALIDADE", "24"))
 
+# Ollama / Qwen2.5-VL (validador visual)
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-vl:3b")
+OLLAMA_ENABLED = os.getenv("OLLAMA_ENABLED", "true").lower() in ("true", "1", "yes")
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
+OLLAMA_MIN_SCORE = float(os.getenv("OLLAMA_MIN_SCORE", "0.45"))
+
 # Fuso horário de Brasília (UTC-3)
 BRT = timezone(timedelta(hours=-3))
 
@@ -68,6 +75,11 @@ logger.info(f"  EXPECTED_CPF_RECEBEDOR_PARTIAL = {EXPECTED_CPF_RECEBEDOR_PARTIAL
 logger.info(f"  EXPECTED_INSTITUICAO_RECEBEDOR = {EXPECTED_INSTITUICAO_RECEBEDOR}")
 logger.info(f"  EXPECTED_CHAVE_PIX = {EXPECTED_CHAVE_PIX}")
 logger.info(f"  MAX_HORAS_VALIDADE = {MAX_HORAS_VALIDADE}h")
+logger.info(f"  OLLAMA_URL = {OLLAMA_URL}")
+logger.info(f"  OLLAMA_MODEL = {OLLAMA_MODEL}")
+logger.info(f"  OLLAMA_ENABLED = {OLLAMA_ENABLED}")
+logger.info(f"  OLLAMA_TIMEOUT = {OLLAMA_TIMEOUT}s")
+logger.info(f"  OLLAMA_MIN_SCORE = {OLLAMA_MIN_SCORE}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -105,10 +117,19 @@ class TrustScore(BaseModel):
     penalidades: list[str]
 
 
+class QwenValidation(BaseModel):
+    valido: Optional[bool] = None
+    confianca: Optional[float] = None
+    motivo: Optional[str] = None
+    tempo_segundos: Optional[float] = None
+    erro: Optional[str] = None
+
+
 class ExtractionResult(BaseModel):
     success: bool
     dados: Optional[PixData] = None
     trust: Optional[TrustScore] = None
+    validacao_visual: Optional[QwenValidation] = None
     error: Optional[str] = None
 
 
@@ -1748,41 +1769,160 @@ def calculate_trust_score(data: PixData) -> TrustScore:
 
 
 # ============================================================
+# VALIDAÇÃO VISUAL — Qwen2.5-VL via Ollama
+# ============================================================
+
+def _validate_with_qwen(image_bytes: bytes, data: PixData, trust: TrustScore) -> Optional[QwenValidation]:
+    """
+    Envia imagem + dados extraídos para Qwen2.5-VL via Ollama.
+    O modelo analisa visualmente se o comprovante é real ou forjado.
+    Retorna None se Ollama estiver desabilitado ou indisponível.
+    """
+    if not OLLAMA_ENABLED:
+        return None
+    if trust.score < OLLAMA_MIN_SCORE:
+        logger.info(f"[Qwen] Pulando validação — score {trust.score} < {OLLAMA_MIN_SCORE}")
+        return None
+
+    prompt = (
+        "Você é um especialista em validação de comprovantes bancários PIX brasileiros. "
+        "Analise a imagem do comprovante e os dados extraídos por OCR abaixo.\n\n"
+        f"Dados extraídos pelo OCR:\n"
+        f"- Banco: {data.banco_origem or 'não identificado'}\n"
+        f"- Nome recebedor: {data.nome_recebedor or 'não encontrado'}\n"
+        f"- CPF recebedor: {data.cpf_recebedor or 'não encontrado'}\n"
+        f"- Nome pagador: {data.nome_pagador or 'não encontrado'}\n"
+        f"- Valor: {data.valor_raw or 'não encontrado'}\n"
+        f"- Data/hora: {data.data_hora or 'não encontrada'}\n"
+        f"- ID transação: {data.id_transacao or 'não encontrado'}\n"
+        f"- Chave PIX: {data.chave_pix or 'não encontrada'}\n"
+        f"- Trust score OCR: {trust.score}\n\n"
+        "Analise criteriosamente:\n"
+        "1. O layout visual é consistente com um comprovante real do banco indicado?\n"
+        "2. As fontes, cores e alinhamento parecem autênticos ou editados?\n"
+        "3. Os dados na imagem correspondem aos dados extraídos pelo OCR?\n"
+        "4. Há sinais de edição digital (Photoshop, recorte, colagem)?\n"
+        "5. É realmente um comprovante de transferência PIX?\n\n"
+        "Responda APENAS com JSON válido, sem markdown, sem explicação fora do JSON:\n"
+        '{"valido": true ou false, "confianca": 0.0 a 1.0, "motivo": "explicação curta"}'
+    )
+
+    img_b64 = base64.b64encode(image_bytes).decode('utf-8')
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "images": [img_b64],
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+            "num_predict": 200,
+        },
+    }
+
+    start = time.time()
+    try:
+        with httpx.Client(timeout=OLLAMA_TIMEOUT) as client:
+            resp = client.post(f"{OLLAMA_URL}/api/generate", json=payload)
+            resp.raise_for_status()
+        elapsed = time.time() - start
+        result = resp.json()
+        response_text = result.get("response", "").strip()
+        logger.info(f"[Qwen] Resposta em {elapsed:.1f}s: {response_text[:200]}")
+
+        # Parse JSON da resposta
+        json_match = re.search(r'\{[^}]+\}', response_text)
+        if json_match:
+            import json
+            parsed = json.loads(json_match.group())
+            return QwenValidation(
+                valido=parsed.get("valido"),
+                confianca=parsed.get("confianca"),
+                motivo=parsed.get("motivo", ""),
+                tempo_segundos=round(elapsed, 1),
+            )
+        else:
+            logger.warning(f"[Qwen] Resposta não contém JSON válido: {response_text[:200]}")
+            return QwenValidation(
+                erro=f"Resposta sem JSON válido: {response_text[:100]}",
+                tempo_segundos=round(elapsed, 1),
+            )
+
+    except httpx.ConnectError:
+        logger.warning("[Qwen] Ollama não disponível — pulando validação visual")
+        return None
+    except httpx.ReadTimeout:
+        elapsed = time.time() - start
+        logger.warning(f"[Qwen] Timeout após {elapsed:.1f}s")
+        return QwenValidation(erro=f"Timeout após {elapsed:.0f}s", tempo_segundos=round(elapsed, 1))
+    except Exception as e:
+        elapsed = time.time() - start
+        logger.warning(f"[Qwen] Erro: {e}")
+        return QwenValidation(erro=str(e), tempo_segundos=round(elapsed, 1))
+
+
+def _process_and_validate(file_bytes: bytes, filename: str, endpoint: str) -> ExtractionResult:
+    """
+    Fluxo unificado: OCR → Parse → Trust Score → Validação Visual (Qwen).
+    Usado por todos os endpoints /extract.
+    """
+    start = time.time()
+    logger.info(f"[{endpoint}] Tamanho: {len(file_bytes)} bytes")
+
+    text = extract_text(file_bytes, filename)
+    if not text or len(text.strip()) < 10:
+        logger.warning(f"[{endpoint}] Texto insuficiente extraído de {filename}")
+        return ExtractionResult(
+            success=False,
+            error="Não foi possível extrair texto do arquivo. Verifique a qualidade da imagem.",
+        )
+
+    data = parse_receipt(text)
+    trust = calculate_trust_score(data)
+
+    # Validação visual com Qwen (apenas para imagens, não PDFs com texto nativo)
+    qwen_result = None
+    ext = Path(filename).suffix.lower()
+    if ext != ".pdf":
+        qwen_result = _validate_with_qwen(file_bytes, data, trust)
+    else:
+        # Para PDFs, tenta renderizar primeira página como imagem para o Qwen
+        try:
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            if len(doc) > 0:
+                pix = doc[0].get_pixmap(dpi=150)
+                img_bytes = pix.tobytes("png")
+                qwen_result = _validate_with_qwen(img_bytes, data, trust)
+            doc.close()
+        except Exception as e:
+            logger.warning(f"[{endpoint}] Não foi possível renderizar PDF para Qwen: {e}")
+
+    elapsed = time.time() - start
+    logger.info(
+        f"[{endpoint}] {filename} | banco={data.banco_origem} | score={trust.score} | nivel={trust.nivel}"
+        f" | valor={data.valor} | recebedor={data.nome_recebedor} | pagador={data.nome_pagador}"
+        f" | {elapsed:.2f}s"
+    )
+    if trust.penalidades:
+        logger.info(f"[{endpoint}] Penalidades: {'; '.join(trust.penalidades)}")
+    if qwen_result and qwen_result.valido is not None:
+        logger.info(f"[{endpoint}] Qwen: valido={qwen_result.valido} confianca={qwen_result.confianca} motivo={qwen_result.motivo}")
+
+    return ExtractionResult(success=True, dados=data, trust=trust, validacao_visual=qwen_result)
+
+
+# ============================================================
 # ENDPOINTS
 # ============================================================
 
 @app.post("/extract", response_model=ExtractionResult)
 async def extract_from_upload(file: UploadFile = File(...)):
     """Extrai dados de comprovante PIX enviado como upload."""
-    start = time.time()
     filename = file.filename or "comprovante.jpg"
     logger.info(f"[/extract] Recebido: {filename}")
     try:
         file_bytes = await file.read()
-        logger.info(f"[/extract] Tamanho: {len(file_bytes)} bytes")
-
-        text = extract_text(file_bytes, filename)
-        if not text or len(text.strip()) < 10:
-            logger.warning(f"[/extract] Texto insuficiente extraído de {filename}")
-            return ExtractionResult(
-                success=False,
-                error="Não foi possível extrair texto do arquivo. Verifique a qualidade da imagem.",
-            )
-
-        data = parse_receipt(text)
-        trust = calculate_trust_score(data)
-        elapsed = time.time() - start
-
-        logger.info(
-            f"[/extract] {filename} | banco={data.banco_origem} | score={trust.score} | nivel={trust.nivel}"
-            f" | valor={data.valor} | recebedor={data.nome_recebedor} | pagador={data.nome_pagador}"
-            f" | {elapsed:.2f}s"
-        )
-        if trust.penalidades:
-            logger.info(f"[/extract] Penalidades: {'; '.join(trust.penalidades)}")
-
-        return ExtractionResult(success=True, dados=data, trust=trust)
-
+        return _process_and_validate(file_bytes, filename, "/extract")
     except Exception as e:
         logger.error(f"[/extract] Erro ao processar {filename}: {e}")
         return ExtractionResult(success=False, error=str(e))
@@ -1791,35 +1931,11 @@ async def extract_from_upload(file: UploadFile = File(...)):
 @app.post("/extract/base64", response_model=ExtractionResult)
 async def extract_from_base64(input_data: Base64Input):
     """Extrai dados de comprovante PIX enviado como base64."""
-    start = time.time()
     filename = input_data.filename
     logger.info(f"[/extract/base64] Recebido: {filename}")
     try:
         file_bytes = base64.b64decode(input_data.file)
-        logger.info(f"[/extract/base64] Tamanho: {len(file_bytes)} bytes")
-
-        text = extract_text(file_bytes, filename)
-        if not text or len(text.strip()) < 10:
-            logger.warning(f"[/extract/base64] Texto insuficiente de {filename}")
-            return ExtractionResult(
-                success=False,
-                error="Não foi possível extrair texto do arquivo.",
-            )
-
-        data = parse_receipt(text)
-        trust = calculate_trust_score(data)
-        elapsed = time.time() - start
-
-        logger.info(
-            f"[/extract/base64] {filename} | banco={data.banco_origem} | score={trust.score} | nivel={trust.nivel}"
-            f" | valor={data.valor} | recebedor={data.nome_recebedor} | pagador={data.nome_pagador}"
-            f" | {elapsed:.2f}s"
-        )
-        if trust.penalidades:
-            logger.info(f"[/extract/base64] Penalidades: {'; '.join(trust.penalidades)}")
-
-        return ExtractionResult(success=True, dados=data, trust=trust)
-
+        return _process_and_validate(file_bytes, filename, "/extract/base64")
     except Exception as e:
         logger.error(f"[/extract/base64] Erro ao processar {filename}: {e}")
         return ExtractionResult(success=False, error=str(e))
