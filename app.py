@@ -183,6 +183,13 @@ def clean_text(text: str) -> str:
     """Normaliza texto OCR."""
     # Remove null bytes e caracteres de controle (comum em PDFs do BB)
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+    # Normaliza caracteres PUA de fontes customizadas (PicPay usa \ue092=: \ue088=- \ue09d=+)
+    text = text.replace('\ue092', ':').replace('\ue088', '-').replace('\ue09d', '+')
+    # Normaliza bullet/dot chars que PDFs usam para mascarar CPF
+    text = text.replace('\u2022', '*')  # bullet → *
+    text = text.replace('\u2023', '*')  # triangular bullet → *
+    text = text.replace('\u25cf', '*')  # black circle → *
+    text = text.replace('\u00b7', '*')  # middle dot → *
     # Corrige artefatos comuns do Tesseract
     text = text.replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
     text = text.replace("\u2014", "-").replace("\u2013", "-")
@@ -270,6 +277,8 @@ def find_data(text: str) -> Optional[str]:
             r'(\d{2}\s+\w+\s+\d{4}\s*[-–]\s*\d{2}:\d{2}:\d{2})',  # 07 DEZ 2025 - 07:02:21
             r'(\d{2}\s+\w{3}\s+\d{4}\s*[-–]\s*\d{2}:\d{2}:\d{2})',
             r'[Ss]ábado,?\s*(\d{1,2}\s+de\s+\w+\s+de\s+\d{4},?\s+às\s+\d{2}:\d{2}:\d{2})',
+            r'(\d{2}/\w{3}/\d{4}\s*[-–]\s*\d{2}:\d{2}:\d{2})',  # 02/mar/2026 - 19:44:50
+            r'(\d{2}/\w{3}/\d{4}\s*[-–]\s*\d{2}:\d{2})',  # 02/mar/2026 - 19:44
             r'(\d{2}/\d{2}/\d{4})',  # Só data
             r'(\d{1,2}\s+\w{3}\s+\d{4},\s*\d{1,2}:\d{2}(?::\d{2})?)',  # 18 mar 2026, 3:50:48
         ]
@@ -352,8 +361,8 @@ def classify_bank(text: str) -> str:
         return 'pagbank'
     if 'mercado pago' in text_lower:
         return 'mercado_pago'
-    if 'comprovante bb' in text_lower or 'bco do brasil' in text_lower or 'banco do brasil' in text_lower:
-        return 'banco_do_brasil'
+    if 'picpay' in text_lower:
+        return 'picpay'
     if 'cresol' in text_lower:
         return 'cresol'
     if 'itaú' in text_lower or 'itau' in text_lower:
@@ -1235,6 +1244,84 @@ def parse_generic(text: str) -> PixData:
     return data
 
 
+def parse_picpay(text: str) -> PixData:
+    """Parser para comprovantes PicPay."""
+    data = PixData(banco_origem='picpay', raw_text=text)
+
+    valor, valor_raw = find_valor(text)
+    data.valor = valor
+    data.valor_raw = valor_raw
+    data.data_hora = find_data(text)
+    data.id_transacao = find_id_transacao(text)
+    data.chave_pix = find_chave_pix(text)
+
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+
+    # PicPay layout: Para / De sections, nomes podem estar em 2 linhas
+    para_idx = None
+    de_idx = None
+    id_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r'^Para$', line, re.IGNORECASE) and para_idx is None:
+            para_idx = i
+        if re.match(r'^De$', line, re.IGNORECASE) and de_idx is None:
+            de_idx = i
+        if re.match(r'^ID\s+da\s+transa', line, re.IGNORECASE):
+            id_idx = i
+
+    def _parse_picpay_section(start, end):
+        """Extract nome, CPF, instituicao from a PicPay section."""
+        section = lines[start + 1:end] if end else lines[start + 1:start + 8]
+        nome = None
+        cpf = None
+        inst = None
+        nome_lines = []
+        for line in section:
+            # CPF mascarado: ***.824.458-**
+            if re.match(r'^[\*\.]+\d{3}', line):
+                cpf = line
+                break
+            # Instituição ou label — para de coletar nome
+            if re.match(r'^(ID|Chave|CNPJ|Ouvidoria|SAC|Canal)', line, re.IGNORECASE):
+                break
+            nome_lines.append(line)
+        if nome_lines:
+            nome = ' '.join(nome_lines)
+        # Instituição: próxima linha após CPF
+        if cpf:
+            cpf_idx_in_section = section.index(cpf)
+            if cpf_idx_in_section + 1 < len(section):
+                candidate = section[cpf_idx_in_section + 1]
+                if not re.match(r'^(De|Para|ID|Chave|\*)', candidate, re.IGNORECASE):
+                    inst = candidate
+        return nome, cpf, inst
+
+    if para_idx is not None:
+        end = de_idx if de_idx and de_idx > para_idx else (id_idx or None)
+        nome, cpf, inst = _parse_picpay_section(para_idx, end)
+        data.nome_recebedor = nome
+        data.cpf_recebedor = cpf
+        data.instituicao_recebedor = inst
+
+    if de_idx is not None:
+        end = id_idx if id_idx and id_idx > de_idx else None
+        nome, cpf, inst = _parse_picpay_section(de_idx, end)
+        data.nome_pagador = nome
+        data.cpf_pagador = cpf
+        data.instituicao_pagador = inst
+
+    # Chave Pix: pode estar após "Chave Pix do recebedor"
+    if not data.chave_pix:
+        for i, line in enumerate(lines):
+            if re.match(r'^Chave\s+Pix', line, re.IGNORECASE) and i + 1 < len(lines):
+                val = lines[i + 1].strip()
+                if val.startswith('+') or re.match(r'^\d{10,}', val):
+                    data.chave_pix = val
+                break
+
+    return data
+
+
 # ============================================================
 # ROUTER DE PARSERS
 # ============================================================
@@ -1245,6 +1332,7 @@ BANK_PARSERS = {
     'pagbank': parse_pagbank,
     'banco_do_brasil': parse_banco_do_brasil,
     'mercado_pago': parse_mercado_pago,
+    'picpay': parse_picpay,
     'cresol': parse_cresol,
     'itau': parse_itau,
     'caixa': parse_caixa,
@@ -1312,8 +1400,10 @@ def parse_data_hora(data_hora_str: str) -> Optional[datetime]:
             except (ValueError, IndexError):
                 continue
 
-    # Formato: "07 DEZ 2025 - 07:02:21" ou "07 DEZ 2025 - 07:02:21"
+    # Formato: "07 DEZ 2025 - 07:02:21" ou "02/mar/2026 - 19:44:50"
     m = re.search(r'(\d{2})\s+(\w{3,})\s+(\d{4})\s*[-–]\s*(\d{2}):(\d{2}):(\d{2})', data_hora_str)
+    if not m:
+        m = re.search(r'(\d{2})/(\w{3,})/(\d{4})\s*[-–]\s*(\d{2}):(\d{2}):(\d{2})', data_hora_str)
     if m:
         dia, mes_str, ano = int(m.group(1)), m.group(2).lower(), int(m.group(3))
         hora, minuto, segundo = int(m.group(4)), int(m.group(5)), int(m.group(6))
