@@ -62,7 +62,7 @@ MAX_HORAS_VALIDADE = int(os.getenv("MAX_HORAS_VALIDADE", "24"))
 # Ollama / Qwen2.5-VL (validador visual)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-vl:3b")
-OLLAMA_ENABLED = os.getenv("OLLAMA_ENABLED", "true").lower() in ("true", "1", "yes")
+OLLAMA_ENABLED = os.getenv("OLLAMA_ENABLED", "false").lower() in ("true", "1", "yes")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
 OLLAMA_MIN_SCORE = float(os.getenv("OLLAMA_MIN_SCORE", "0.45"))
 

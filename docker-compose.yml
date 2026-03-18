@@ -1,29 +1,6 @@
 version: "3.8"
 
 services:
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    deploy:
-      replicas: 1
-      resources:
-        limits:
-          memory: 8192M
-        reservations:
-          memory: 4096M
-      restart_policy:
-        condition: on-failure
-        delay: 10s
-        max_attempts: 3
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
   pix-extractor:
     image: jondevsouza31/api-comprovante:latest
     ports:
@@ -34,13 +11,6 @@ services:
       - EXPECTED_INSTITUICAO_RECEBEDOR=Banco Inter
       - EXPECTED_CHAVE_PIX=16991500219
       - MAX_HORAS_VALIDADE=24
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5vl:3b
-      - OLLAMA_ENABLED=true
-      - OLLAMA_TIMEOUT=120
-      - OLLAMA_MIN_SCORE=0.45
-    depends_on:
-      - ollama
     deploy:
       replicas: 1
       resources:
@@ -58,6 +28,3 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
-volumes:
-  ollama_data:
